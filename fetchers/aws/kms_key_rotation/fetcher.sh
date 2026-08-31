@@ -56,6 +56,14 @@ total_keys=0
 rotated_keys=0
 kms_results=()
 
+acm_key_ids=$(aws kms list-aliases \
+    --query "Aliases[?AliasName=='alias/aws/acm'].TargetKeyId" \
+    --output text 2>/dev/null)
+if [ $? -ne 0 ]; then
+    echo "aws kms list-aliases (alias/aws/acm) failed" >> "$_FAILURE_LOG"
+    log_error "Failed to resolve the alias/aws/acm KMS key"
+fi
+
 key_ids=$(aws kms list-keys --query "Keys[*].KeyId" --output text 2>/dev/null)
 list_exit=$?
 if [ $list_exit -ne 0 ]; then
@@ -64,6 +72,13 @@ if [ $list_exit -ne 0 ]; then
 else
     for key_id in $key_ids; do
         [ -z "$key_id" ] && continue
+
+        # ACM's AWS-managed key cannot have automatic rotation configured and
+        # therefore must not affect this fetcher's rotation coverage.
+        case " $acm_key_ids " in
+            *" $key_id "*) continue ;;
+        esac
+
         total_keys=$((total_keys + 1))
 
         key_details=$(aws kms describe-key --key-id "$key_id" 2>/dev/null)
