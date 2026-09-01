@@ -13,6 +13,8 @@ into a no-op with no error anywhere. These lock in the invariants:
   * enter in a confirm dialog means the safe answer
   * a focused text field eats the global keys (documented, not fixed — esc is
     the way out, which is why the footer lists it)
+  * left/right walk a button row, and up/down walk the list a filter filters —
+    without stealing either from the widgets that already bind them
 
 Written sync (asyncio.run per test) so the suite needs no async pytest plugin.
 """
@@ -27,11 +29,11 @@ import pytest
 
 pytest.importorskip("textual", reason="TUI tests need the 'tui' extra")
 
-from textual.widgets import DataTable, Input, TabbedContent  # noqa: E402
+from textual.widgets import Button, DataTable, Input, TabbedContent, Tree  # noqa: E402
 
 from framework import api  # noqa: E402
 from framework.tui.app import FetcherApp  # noqa: E402
-from framework.tui.modals import ConfirmModal, MultiPickerModal  # noqa: E402
+from framework.tui.modals import ConfirmModal, FormModal, MultiPickerModal  # noqa: E402
 from framework.tui.screens.manifest import ManifestPage  # noqa: E402
 from framework.tui.screens.upload import UploadPage  # noqa: E402
 
@@ -296,3 +298,125 @@ def test_confirm_modal_y_still_confirms(tmp_path):
         return results
 
     assert _run(body, manifest) == [True]
+
+
+# --------------------------------------------------------------------------- #
+# arrow keys: a button row is a left-right choice, a filter box is above a list
+# --------------------------------------------------------------------------- #
+
+def test_confirm_modal_arrows_walk_the_button_row(tmp_path):
+    """Yes/No reads as a left-right choice, so it must answer to left and right.
+    Textual gives Button no horizontal navigation — tab was the only way across."""
+    manifest = _write_manifest(tmp_path)
+
+    async def body(app, pilot):
+        results = []
+        app.push_screen(ConfirmModal("Remove 'x' from the manifest?"), results.append)
+        await pilot.pause()
+        seen = [_focus_id(app)]          # AUTO_FOCUS lands on the safe answer
+        for key in ("left", "left", "right"):
+            await pilot.press(key)
+            await pilot.pause()
+            seen.append(_focus_id(app))
+        await pilot.press("enter")
+        await pilot.pause()
+        return seen, results
+
+    seen, results = _run(body, manifest)
+    assert seen == ["no", "yes", "no", "yes"], "arrows did not walk (and wrap) the row"
+    assert results == [True], "enter did not press the button the arrows landed on"
+
+
+def test_form_modal_arrows_walk_buttons_but_a_field_keeps_its_cursor(tmp_path):
+    """The guard that makes the row bindings safe: they live on the modal, so an
+    Input still claims left/right for its own cursor and never moves focus."""
+    manifest = _write_manifest(tmp_path)
+    spec = {"key": "region", "kind": "text", "value": "us-east-1"}
+
+    async def body(app, pilot):
+        app.push_screen(FormModal("Edit entry", {"config": [spec]}))
+        await pilot.pause()
+        field = app.screen.query_one("#field-input", Input)
+        in_field = _focus_id(app)
+        # Input selects its value on focus; end collapses that to a known cursor.
+        await pilot.press("end")
+        await pilot.pause()
+        at_end = field.cursor_position
+        await pilot.press("left")
+        await pilot.pause()
+        moved_cursor = field.cursor_position
+        still_in_field = _focus_id(app)
+        # now put focus on the row and check the arrows do work there
+        app.screen.query_one("#save", Button).focus()
+        await pilot.pause()
+        await pilot.press("right")
+        await pilot.pause()
+        return in_field, at_end, moved_cursor, still_in_field, _focus_id(app)
+
+    in_field, at_end, moved, still, on_row = _run(body, manifest)
+    assert in_field == "field-input" and still == "field-input", "left stole focus from a field"
+    assert moved == at_end - 1, "left did not move the text cursor"
+    assert on_row == "cancel", "right did not cross the button row"
+
+
+def test_disabled_buttons_are_skipped(tmp_path):
+    """MultiPicker opens with nothing chosen, so Add is disabled — arrows must
+    not strand focus on a button that cannot take it."""
+    manifest = _write_manifest(tmp_path)
+
+    async def body(app, pilot):
+        await pilot.press("2")
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        assert isinstance(app.screen, MultiPickerModal)
+        assert app.screen.query_one("#confirm", Button).disabled
+        app.screen.query_one("#cancel", Button).focus()
+        await pilot.pause()
+        await pilot.press("left")
+        await pilot.pause()
+        return _focus_id(app)
+
+    assert _run(body, manifest) == "cancel"
+
+
+def test_catalog_filter_arrows_walk_the_tree(tmp_path):
+    """Typing in the filter, up/down move the result cursor without leaving the
+    box — so the contract pane follows along and you can keep narrowing."""
+    manifest = _write_manifest(tmp_path)
+
+    async def body(app, pilot):
+        await pilot.press("1")
+        await pilot.pause()
+        page = app.screen.query_one("#catalog-left").parent
+        page.query_one("#catalog-search", Input).focus()
+        await pilot.pause()
+        tree = page.query_one("#catalog-tree", Tree)
+        before = tree.cursor_line
+        await pilot.press("down", "down")
+        await pilot.pause()
+        return before, tree.cursor_line, _focus_id(app)
+
+    before, after, focused = _run(body, manifest)
+    assert after == before + 2, "down did not move the catalog cursor from the filter"
+    assert focused == "catalog-search", "down gave away the filter's focus"
+
+
+def test_multipicker_filter_arrows_walk_the_tree(tmp_path):
+    manifest = _write_manifest(tmp_path)
+
+    async def body(app, pilot):
+        await pilot.press("2")
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        assert isinstance(app.screen, MultiPickerModal)
+        tree = app.screen.query_one("#multi-pick-tree", Tree)
+        before = tree.cursor_line
+        await pilot.press("down")
+        await pilot.pause()
+        return before, tree.cursor_line, _focus_id(app)
+
+    before, after, focused = _run(body, manifest)
+    assert after == before + 1, "down did not move the picker cursor from the filter"
+    assert focused == "multi-pick-filter"

@@ -5,6 +5,11 @@
 # For each KMS key, reports rotation status, state/usage, and policy.
 # Includes the AWS Config rule compliance for cmk-backing-key-rotation-enabled.
 #
+# A key whose policy denies the collecting identity is reported with
+# rotation_status "unreadable" and a collection_error, and is left out of the
+# rotation coverage denominator -- it does not fail the run. Only list-keys, the
+# caller identity, or every key being unreadable fails collection (GH #44).
+#
 # Output: $EVIDENCE_DIR/aws_kms_key_rotation.json
 # Optional env (else the AWS CLI ambient identity/region): AWS_PROFILE, AWS_DEFAULT_REGION
 # Required tools: aws, jq
@@ -31,10 +36,25 @@ source "$(dirname "$0")/../_shared/aws.sh"
 _TARGET_ID="$(aws_target_id "$REGION")"
 OUTPUT_JSON="$OUTPUT_DIR/aws_kms_key_rotation_${_TARGET_ID}.json"
 _FAILURE_LOG="$(mktemp -t aws_kms_key_rotation_fail.XXXXXX)"
-trap 'rm -f "$_FAILURE_LOG"' EXIT
+_CALL_ERR="$(mktemp -t aws_kms_key_rotation_err.XXXXXX)"
+trap 'rm -f "$_FAILURE_LOG" "$_CALL_ERR"' EXIT
 
 log_info() { printf '%s INFO aws_kms_key_rotation %s\n' "$(date -u +'%Y-%m-%d %H:%M:%S')" "$*" >&2; }
 log_error() { printf '%s ERROR aws_kms_key_rotation %s\n' "$(date -u +'%Y-%m-%d %H:%M:%S')" "$*" >&2; }
+
+# key_call_error <label> -- one-line reason for a failed per-key call, read from
+# $_CALL_ERR. Prefers the AWS error code botocore names ("AccessDeniedException")
+# and falls back to the trimmed stderr, so the note on the key says what the API
+# actually refused rather than just that something went wrong.
+key_call_error() {
+    local label="$1" code text
+    code=$(sed -n 's/.*An error occurred (\([A-Za-z]*\)).*/\1/p' "$_CALL_ERR" | head -1)
+    if [ -z "$code" ]; then
+        text=$(tr '\n\r\t' '   ' < "$_CALL_ERR" | tr -s ' ' | sed 's/^ *//;s/ *$//' | cut -c1-200)
+        code="${text:-call failed}"
+    fi
+    printf '%s on %s' "$code" "$label"
+}
 
 CALLER_IDENTITY=$(aws sts get-caller-identity --output json 2>/dev/null)
 if [ $? -ne 0 ]; then
@@ -53,7 +73,9 @@ if [ $? -ne 0 ]; then
 fi
 
 total_keys=0
+readable_keys=0
 rotated_keys=0
+unreadable_keys=0
 kms_results=()
 
 key_ids=$(aws kms list-keys --query "Keys[*].KeyId" --output text 2>/dev/null)
@@ -66,48 +88,79 @@ else
         [ -z "$key_id" ] && continue
         total_keys=$((total_keys + 1))
 
-        key_details=$(aws kms describe-key --key-id "$key_id" 2>/dev/null)
+        # A key's own policy can deny the collecting identity -- an AWS-managed
+        # key such as alias/aws/acm, or a customer key whose policy scopes out
+        # the readonly role. That is a property of the key, not a failure of the
+        # run: the reason is recorded on the key and the other keys still
+        # collect. Only list-keys and the caller identity fail the fetcher.
+        key_error=""
+
+        key_details=$(aws kms describe-key --key-id "$key_id" 2>"$_CALL_ERR")
         if [ $? -ne 0 ]; then
-            echo "aws kms describe-key ($key_id) failed" >> "$_FAILURE_LOG"
+            key_error="${key_error:+$key_error; }$(key_call_error DescribeKey)"
             key_details='{"KeyMetadata": {}}'
         fi
-        key_rotation_status=$(aws kms get-key-rotation-status --key-id "$key_id" 2>/dev/null)
+
+        # rotation_enabled stays null when the status could not be read. The old
+        # `false` fallback asserted "not rotated" about a key never actually
+        # read, and dragged down the coverage percentage with it.
+        rotation_status="unreadable"
+        is_rotated="null"
+        key_rotation_status=$(aws kms get-key-rotation-status --key-id "$key_id" 2>"$_CALL_ERR")
         if [ $? -ne 0 ]; then
-            echo "aws kms get-key-rotation-status ($key_id) failed" >> "$_FAILURE_LOG"
-            key_rotation_status='{"KeyRotationEnabled": false}'
+            key_error="${key_error:+$key_error; }$(key_call_error GetKeyRotationStatus)"
+            unreadable_keys=$((unreadable_keys + 1))
+        else
+            readable_keys=$((readable_keys + 1))
+            if [ "$(echo "$key_rotation_status" | jq -r '.KeyRotationEnabled // false')" = "true" ]; then
+                rotation_status="enabled"
+                is_rotated="true"
+                rotated_keys=$((rotated_keys + 1))
+            else
+                rotation_status="disabled"
+                is_rotated="false"
+            fi
         fi
 
         key_arn=$(echo "$key_details" | jq -r '.KeyMetadata.Arn // "Unknown"')
         key_state=$(echo "$key_details" | jq -r '.KeyMetadata.KeyState // "Unknown"')
         key_usage=$(echo "$key_details" | jq -r '.KeyMetadata.KeyUsage // "Unknown"')
-        is_rotated=$(echo "$key_rotation_status" | jq -r '.KeyRotationEnabled // false')
 
-        if [ "$is_rotated" = "true" ]; then
-            rotated_keys=$((rotated_keys + 1))
-        fi
-
-        key_policy=$(aws kms get-key-policy --key-id "$key_id" --policy-name default 2>/dev/null)
+        key_policy=$(aws kms get-key-policy --key-id "$key_id" --policy-name default 2>"$_CALL_ERR")
         if [ $? -ne 0 ]; then
-            echo "aws kms get-key-policy ($key_id) failed" >> "$_FAILURE_LOG"
+            key_error="${key_error:+$key_error; }$(key_call_error GetKeyPolicy)"
             key_policy='{}'
         fi
 
         kms_results+=("$(jq -n \
             --arg id "$key_id" --arg arn "$key_arn" --arg state "$key_state" --arg usage "$key_usage" \
-            --argjson rotated "$is_rotated" --argjson policy "$key_policy" \
-            '{key_id: $id, key_arn: $arn, key_state: $state, key_usage: $usage, rotation_enabled: $rotated, key_policy: $policy}')")
+            --argjson rotated "$is_rotated" --arg rotation_status "$rotation_status" \
+            --argjson policy "$key_policy" --arg collection_error "$key_error" \
+            '{key_id: $id, key_arn: $arn, key_state: $state, key_usage: $usage,
+              rotation_enabled: $rotated, rotation_status: $rotation_status,
+              key_policy: $policy}
+             + (if $collection_error == "" then {} else {collection_error: $collection_error} end)')")
     done
 fi
 
+# Keys exist but not one rotation status could be read: the rotation evidence is
+# empty, which is a problem with the collecting identity rather than a per-key
+# quirk. Fail rather than report 0-of-0 coverage as a clean run.
+if [ "$total_keys" -gt 0 ] && [ "$readable_keys" -eq 0 ]; then
+    echo "aws kms get-key-rotation-status failed for all $total_keys key(s)" >> "$_FAILURE_LOG"
+    log_error "Could not read rotation status for any of the $total_keys KMS key(s)"
+fi
+
 percentage=0
-[ $total_keys -gt 0 ] && percentage=$(( (rotated_keys * 100) / total_keys ))
+[ $readable_keys -gt 0 ] && percentage=$(( (rotated_keys * 100) / readable_keys ))
 
 jq -n \
     --arg profile "$PROFILE" --arg region "$REGION" --arg datetime "$DATETIME" \
     --arg account_id "$ACCOUNT_ID" --arg arn "$ARN" \
     --argjson keys "[$(IFS=,; echo "${kms_results[*]}")]" \
     --argjson config "$config_compliance" \
-    --arg total "$total_keys" --arg rotated "$rotated_keys" --arg percentage "$percentage" \
+    --arg total "$total_keys" --arg readable "$readable_keys" --arg unreadable "$unreadable_keys" \
+    --arg rotated "$rotated_keys" --arg percentage "$percentage" \
     '{
         metadata: {profile: $profile, region: $region, datetime: $datetime, account_id: $account_id, arn: $arn},
         results: {
@@ -115,6 +168,8 @@ jq -n \
             config_rule: $config,
             summary: {
                 total_keys: ($total | tonumber),
+                readable_keys: ($readable | tonumber),
+                unreadable_keys: ($unreadable | tonumber),
                 rotated_keys: ($rotated | tonumber),
                 rotation_percentage: ($percentage | tonumber)
             }

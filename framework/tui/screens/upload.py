@@ -28,6 +28,7 @@ from textual.widgets import Button, Checkbox, DataTable, RichLog, Static
 
 from framework import api
 from framework.tui import palette
+from framework.tui.components.keys import BUTTON_ROW_BINDINGS, ButtonRowNav
 from framework.tui.modals import ConfirmModal
 
 
@@ -47,7 +48,7 @@ class ScriptsSyncEvent(Message):
         super().__init__()
 
 
-class UploadPage(Vertical):
+class UploadPage(ButtonRowNav, Vertical):
     HINTS = [("ctrl+u", "upload"), ("ctrl+i", "intake"), ("p", "preview"),
              ("ctrl+s", "sync"), ("ctrl+r", "refresh")]
 
@@ -60,6 +61,7 @@ class UploadPage(Vertical):
         Binding("p,ctrl+p", "preview_scripts", "Preview"),
         Binding("ctrl+s", "sync_scripts", "Sync Scripts"),
         Binding("ctrl+r", "refresh_upload", "Refresh"),
+        *BUTTON_ROW_BINDINGS,
     ]
 
     def compose(self) -> ComposeResult:

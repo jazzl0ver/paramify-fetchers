@@ -21,6 +21,7 @@ from textual.widgets import Button, DataTable, Input, Static
 from framework import api
 from framework.tui import palette, render
 from framework.tui.components.forms import env_name_from_ref
+from framework.tui.components.keys import BUTTON_ROW_BINDINGS, ButtonRowNav
 from framework.tui.modals import (
     ConfirmModal,
     FormModal,
@@ -30,7 +31,7 @@ from framework.tui.modals import (
 )
 
 
-class ManifestPage(Vertical):
+class ManifestPage(ButtonRowNav, Vertical):
     HINTS = [
         ("a", "add"), ("e", "edit"), ("x", "remove"), ("t", "target"),
         ("A", "assessment"), ("s", "save"), ("v", "validate"), ("p", "preview"),
@@ -46,6 +47,7 @@ class ManifestPage(Vertical):
         Binding("s", "save", "Save"),
         Binding("v", "validate", "Validate"),
         Binding("p", "preview", "Preview"),
+        *BUTTON_ROW_BINDINGS,
     ]
 
     def compose(self) -> ComposeResult:

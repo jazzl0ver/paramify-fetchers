@@ -15,9 +15,10 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Input, Static, Tree
 
 from framework.tui import render
+from framework.tui.components.keys import FILTER_NAV_BINDINGS, FilterListNav
 
 
-class CatalogPage(Horizontal):
+class CatalogPage(FilterListNav, Horizontal):
     """Two-pane fetcher catalog: tree on the left, contract detail on the right."""
 
     HINTS = [("↑↓/jk", "navigate"), ("/", "filter"), ("tab", "pane")]
@@ -26,7 +27,11 @@ class CatalogPage(Horizontal):
         Binding("tab", "next_pane", "pane", show=False),
         Binding("j", "tree_down", "down", show=False),
         Binding("k", "tree_up", "up", show=False),
+        # up/down are unbound on Input, so they only reach here from the filter;
+        # the tree and the detail pane both bind them and keep their own.
+        *FILTER_NAV_BINDINGS,
     ]
+    FILTER_NAV = ("#catalog-search", "#catalog-tree")
 
     _filter: str = ""
 

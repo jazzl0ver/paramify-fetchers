@@ -131,6 +131,7 @@ HEADING_FIELD_MAP: Dict[str, str] = {
     "change description": "changeDescription",
     "short description": "changeDescription",
     "requested changes": "changeDescription",
+    "change type": "changeType",
     "change type explanation": "changeTypeExplanation",
     "categorization explanation": "changeTypeExplanation",
     "reason": "reason",
@@ -146,7 +147,15 @@ HEADING_FIELD_MAP: Dict[str, str] = {
     "plan and timeline": "planAndTimeline.summary",
     "plan": "planAndTimeline.summary",
     "timeline": "planAndTimeline.summary",
+    "plan and timeline summary": "planAndTimeline.summary",
     "milestones": "planAndTimeline.milestones",
+    "planned start": "planAndTimeline.plannedStart",
+    "planned completion": "planAndTimeline.plannedCompletion",
+    "planned end": "planAndTimeline.plannedCompletion",
+    "related vulnerability": "relatedVulnerability",
+    "assessor": "assessorName",
+    "assessor name": "assessorName",
+    "certification package overview uri": "certificationPackageOverviewUri",
 }
 
 # `**Key:** value` inline pairs -> SCN field (or payload-side provenance).
@@ -248,6 +257,16 @@ def sanitize_for_filename(value: str) -> str:
 def normalize(text: str) -> str:
     """Lowercase, strip punctuation, collapse whitespace — for fuzzy heading match."""
     return " ".join(re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).split())
+
+
+def normalize_heading(title: str) -> str:
+    """Heading text -> HEADING_FIELD_MAP key.
+
+    Templates decorate a heading with its requiredness — `### **Change Type**
+    **\\[REQUIRED\\]**`. That marker is presentation; the field name is what is
+    left once it comes off.
+    """
+    return normalize(BOLD_BRACKET_TOKEN_RE.sub(" ", title or ""))
 
 
 def is_placeholder(value: str) -> bool:
@@ -523,7 +542,7 @@ def parse_section(section: str) -> Tuple[Dict[str, str], Dict[str, str]]:
 
         m = HEADING_RE.match(stripped)
         if m:
-            current = m.group("title").strip().lower().rstrip(":")
+            current = normalize_heading(m.group("title"))
             blocks.setdefault(current, [])
             continue
 

@@ -25,9 +25,15 @@ from textual.widgets import Button, Input, Label, OptionList, Static, Tree
 from textual.widgets.option_list import Option
 
 from framework.tui.components.forms import FieldRow
+from framework.tui.components.keys import (
+    BUTTON_ROW_BINDINGS,
+    FILTER_NAV_BINDINGS,
+    ButtonRowNav,
+    FilterListNav,
+)
 
 
-class FormModal(ModalScreen[dict]):
+class FormModal(ButtonRowNav, ModalScreen[dict]):
     """Render grouped field specs; return {group: {key: typed value}} on save.
 
     Empty optional fields are omitted from the result (so we never write blanks);
@@ -44,6 +50,7 @@ class FormModal(ModalScreen[dict]):
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
         Binding("ctrl+s", "save", "Save"),
+        *BUTTON_ROW_BINDINGS,
     ]
 
     def __init__(self, title: str, groups: Dict[str, List[dict]], subtitle: str = "") -> None:
@@ -94,10 +101,11 @@ class FormModal(ModalScreen[dict]):
         self.dismiss(None)
 
 
-class PickerModal(ModalScreen[str]):
+class PickerModal(FilterListNav, ModalScreen[str]):
     """A filterable single-choice list. Returns the chosen option id, or None."""
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+    BINDINGS = [Binding("escape", "cancel", "Cancel"), *FILTER_NAV_BINDINGS]
+    FILTER_NAV = ("#picker-filter", "#picker-list")
 
     def __init__(self, title: str, options: List[Tuple[str, str]], subtitle: str = "") -> None:
         # options: list of (id, label)
@@ -149,7 +157,7 @@ class _PickTree(Tree):
     BINDINGS = [Binding("space", "select_cursor", "Toggle", show=False)]
 
 
-class MultiPickerModal(ModalScreen[list]):
+class MultiPickerModal(ButtonRowNav, FilterListNav, ModalScreen[list]):
     """A filterable multi-select catalog: collapsible per-platform dropdowns of
     checkbox leaves on the left, a live list of everything checked on the right.
     Returns the chosen ids (platform-grouped order), or None.
@@ -161,7 +169,10 @@ class MultiPickerModal(ModalScreen[list]):
     BINDINGS = [
         Binding("escape", "cancel", "Cancel"),
         Binding("ctrl+s", "confirm", "Add"),
+        *BUTTON_ROW_BINDINGS,
+        *FILTER_NAV_BINDINGS,
     ]
+    FILTER_NAV = ("#multi-pick-filter", "#multi-pick-tree")
 
     def __init__(
         self, title: str, groups: List[Tuple[str, List[str]]], subtitle: str = "",
@@ -290,7 +301,7 @@ class MultiPickerModal(ModalScreen[list]):
         self.dismiss(None)
 
 
-class ConfirmModal(ModalScreen[bool]):
+class ConfirmModal(ButtonRowNav, ModalScreen[bool]):
     """A yes/no confirmation. Returns True on confirm, False otherwise."""
 
     # Yes is composed first, so the default AUTO_FOCUS ("*") put enter on the
@@ -303,6 +314,7 @@ class ConfirmModal(ModalScreen[bool]):
         Binding("escape", "no", "No"),
         Binding("n", "no", "No"),
         Binding("y", "yes", "Yes"),
+        *BUTTON_ROW_BINDINGS,
     ]
 
     def __init__(self, message: str) -> None:
