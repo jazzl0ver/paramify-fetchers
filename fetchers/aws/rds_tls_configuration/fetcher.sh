@@ -66,13 +66,15 @@ fi
 # Get unique parameter groups in use
 param_groups=$(echo "$instances_raw" | jq -r '[.[].param_group] | unique[]')
 
-# 2/3. For each parameter group, fetch TLS-related parameters
+# 2/3. For each parameter group, fetch TLS-related parameters. MySQL uses
+# require_secure_transport (including RDS for MySQL 8.4+), while PostgreSQL and
+# SQL Server use rds.force_ssl.
 pg_results=()
 for pg in $param_groups; do
     pg_params=$(aws rds describe-db-parameters \
         --db-parameter-group-name "$pg" \
         \
-        --query 'Parameters[?ParameterName==`ssl_min_protocol_version` || ParameterName==`ssl_max_protocol_version` || ParameterName==`rds.force_ssl`].{name:ParameterName,value:ParameterValue,source:Source,apply_method:ApplyMethod,allowed_values:AllowedValues}' \
+        --query 'Parameters[?ParameterName==`ssl_min_protocol_version` || ParameterName==`ssl_max_protocol_version` || ParameterName==`rds.force_ssl` || ParameterName==`require_secure_transport`].{name:ParameterName,value:ParameterValue,source:Source,apply_method:ApplyMethod,allowed_values:AllowedValues}' \
         --output json 2>/dev/null)
     ec=$?
     if [ $ec -ne 0 ]; then
@@ -81,15 +83,19 @@ for pg in $param_groups; do
     fi
 
     force_ssl=$(echo "$pg_params" | jq -r '.[] | select(.name=="rds.force_ssl") | .value // "unknown"')
+    require_secure_transport=$(echo "$pg_params" | jq -r '.[] | select(.name=="require_secure_transport") | .value // "unknown"')
     ssl_min=$(echo "$pg_params" | jq -r '.[] | select(.name=="ssl_min_protocol_version") | .value // "unknown"')
     ssl_max=$(echo "$pg_params" | jq -r '.[] | select(.name=="ssl_max_protocol_version") | .value // ""')
     force_ssl_source=$(echo "$pg_params" | jq -r '.[] | select(.name=="rds.force_ssl") | .source // "unknown"')
+    require_secure_transport_source=$(echo "$pg_params" | jq -r '.[] | select(.name=="require_secure_transport") | .source // "unknown"')
     ssl_min_source=$(echo "$pg_params" | jq -r '.[] | select(.name=="ssl_min_protocol_version") | .source // "unknown"')
 
     pg_results+=("$(jq -n \
         --arg pg "$pg" \
         --arg force_ssl "$force_ssl" \
         --arg force_ssl_source "$force_ssl_source" \
+        --arg require_secure_transport "$require_secure_transport" \
+        --arg require_secure_transport_source "$require_secure_transport_source" \
         --arg ssl_min "$ssl_min" \
         --arg ssl_min_source "$ssl_min_source" \
         --arg ssl_max "$ssl_max" \
@@ -98,6 +104,9 @@ for pg in $param_groups; do
             parameter_group_name: $pg,
             force_ssl: ($force_ssl == "1"),
             force_ssl_source: $force_ssl_source,
+            require_secure_transport: (($require_secure_transport | ascii_downcase) == "on" or $require_secure_transport == "1" or ($require_secure_transport | ascii_downcase) == "true"),
+            require_secure_transport_source: $require_secure_transport_source,
+            ssl_enforced: (($force_ssl == "1") or (($require_secure_transport | ascii_downcase) == "on") or ($require_secure_transport == "1") or (($require_secure_transport | ascii_downcase) == "true")),
             ssl_min_protocol_version: $ssl_min,
             ssl_min_source: $ssl_min_source,
             ssl_max_protocol_version: (if $ssl_max == "" then "unrestricted" else $ssl_max end),
@@ -161,11 +170,15 @@ done < <(echo "$instances_raw" | jq -c '.[]')
 total_instances=$(echo "$instances_raw" | jq 'length')
 if [ ${#instance_results[@]} -gt 0 ]; then
     force_ssl_enabled=$(printf '%s\n' "${instance_results[@]}" | jq -s '[.[] | select(.tls_configuration.force_ssl == true)] | length')
+    require_secure_transport_enabled=$(printf '%s\n' "${instance_results[@]}" | jq -s '[.[] | select(.tls_configuration.require_secure_transport == true)] | length')
+    ssl_enforced=$(printf '%s\n' "${instance_results[@]}" | jq -s '[.[] | select(.tls_configuration.ssl_enforced == true)] | length')
     tls12_min=$(printf '%s\n' "${instance_results[@]}" | jq -s '[.[] | select(.tls_configuration.ssl_min_protocol_version == "TLSv1.2")] | length')
     params_in_sync=$(printf '%s\n' "${instance_results[@]}" | jq -s '[.[] | select(.parameter_group_sync_status == "in-sync")] | length')
     instances_arr="[$(IFS=,; echo "${instance_results[*]}")]"
 else
     force_ssl_enabled=0
+    require_secure_transport_enabled=0
+    ssl_enforced=0
     tls12_min=0
     params_in_sync=0
     instances_arr="[]"
@@ -189,6 +202,8 @@ results_json=$(jq -n \
     --argjson certificates "$certs_raw" \
     --argjson total "$total_instances" \
     --argjson force_ssl_count "$force_ssl_enabled" \
+    --argjson require_secure_transport_count "$require_secure_transport_enabled" \
+    --argjson ssl_enforced_count "$ssl_enforced" \
     --argjson tls12_count "$tls12_min" \
     --argjson in_sync_count "$params_in_sync" \
     '{
@@ -206,6 +221,8 @@ results_json=$(jq -n \
             summary: {
                 total_instances: $total,
                 force_ssl_enabled: $force_ssl_count,
+                require_secure_transport_enabled: $require_secure_transport_count,
+                ssl_enforced: $ssl_enforced_count,
                 tls_1_2_minimum_enforced: $tls12_count,
                 parameter_groups_in_sync: $in_sync_count
             }

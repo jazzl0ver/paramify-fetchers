@@ -1,6 +1,6 @@
 name: aws_rds_tls_configuration
 version: 0.1.0
-description: Collects RDS instance TLS/SSL configuration (engine, CA cert, parameter group force_ssl and ssl protocol versions, sync status) plus available CA certificates.
+description: Collects RDS instance TLS/SSL configuration (engine, CA cert, parameter group force_ssl or require_secure_transport and SSL protocol versions, sync status) plus available CA certificates.
 category: aws
 
 supports_targets: true

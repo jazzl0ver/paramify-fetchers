@@ -1,6 +1,6 @@
 name: aws_component_ssl_enforcement_status
 version: 0.1.0
-description: Checks S3 bucket policies for an aws:SecureTransport HTTPS-deny statement and RDS DB parameter groups for rds.force_ssl=1 to report which components enforce SSL/TLS in transit.
+description: Checks S3 bucket policies for an aws:SecureTransport HTTPS-deny statement and RDS DB parameter groups for rds.force_ssl=1 or require_secure_transport=ON to report which components enforce SSL/TLS in transit.
 category: aws
 
 supports_targets: true
