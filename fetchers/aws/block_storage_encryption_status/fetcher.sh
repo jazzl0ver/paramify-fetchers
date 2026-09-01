@@ -116,7 +116,7 @@ jq -n \
         metadata: {profile: $profile, region: $region, datetime: $datetime, account_id: $account_id, arn: $arn},
         results: {
             ebs_default_settings: {
-                encryption_enabled_by_default: (($ebs_default  | ascii_downcase) == "true"),
+                encryption_enabled_by_default: (($ebs_default | ascii_downcase) == "true"),
                 default_kms_key_id: $ebs_kms
             },
             storage_inventory: {ebs: $ebs, efs: $efs},

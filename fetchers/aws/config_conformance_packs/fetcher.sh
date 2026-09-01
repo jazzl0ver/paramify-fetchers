@@ -15,7 +15,7 @@ FEDRAMP_LOW_CONTROL_MAPPING="$SCRIPT_DIR/control_mappings/fedramp_low.json"
 FEDRAMP_MODERATE_CONTROL_MAPPING="$SCRIPT_DIR/control_mappings/fedramp_moderate.json"
 NIST_800_53_CONTROL_MAPPING="$SCRIPT_DIR/control_mappings/nist_800_53_rev_5.json"
 
-FEDRAMP_PACK="$(printf '%s' "${FEDRAMP_PACK:-}" | tr '[:upper:]' '[:lower:]')"
+FEDRAMP_PACK="$(printf '%s' "${FEDRAMP_PACK:-low}" | tr '[:upper:]' '[:lower:]')"
 case "$FEDRAMP_PACK" in
     low)
         REFERENCE_KEY="fedramp_low"
@@ -130,7 +130,12 @@ fetch_config_rule_metadata() {
     local -a rule_names batch
 
     jq -n '{ConfigRules: []}' > "$output_file"
-    mapfile -t rule_names < <(jq -r '.ConformancePackRuleComplianceList[]?.ConfigRuleName' "$rules_file" | sort -u)
+    # macOS still ships Bash 3.2, which has indexed arrays but no mapfile.
+    # Populate the array with a read loop so the fetcher works with every Bash
+    # version supported by the repository.
+    while IFS= read -r rule_name; do
+        [ -n "$rule_name" ] && rule_names[${#rule_names[@]}]="$rule_name"
+    done < <(jq -r '.ConformancePackRuleComplianceList[]?.ConfigRuleName' "$rules_file" | sort -u)
 
     for ((offset = 0; offset < ${#rule_names[@]}; offset += 25)); do
         batch=("${rule_names[@]:offset:25}")
@@ -257,16 +262,22 @@ jq -n \
 # Build a compact rule-name index for the selected bundled reference template.
 # No YAML parser is required because ConfigRuleName is a stable scalar in AWS's templates.
 REFERENCE_RULES_FILE="$_TMP_DIR/reference_rules.txt"
-awk '/^[[:space:]]+ConfigRuleName:[[:space:]]*/ {sub(/^[[:space:]]+ConfigRuleName:[[:space:]]*/, ""); print}' "$REFERENCE_TEMPLATE" | sort -u > "$REFERENCE_RULES_FILE"
+awk '/^[[:space:]]+ConfigRuleName:[[:space:]]*/ {
+  sub(/^[[:space:]]+ConfigRuleName:[[:space:]]*/, "")
+  sub(/\r$/, "")
+  print
+}' "$REFERENCE_TEMPLATE" | sort -u > "$REFERENCE_RULES_FILE"
 REFERENCE_SOURCE_LOOKUP_FILE="$_TMP_DIR/reference_source_lookup.json"
 awk '
   /^[[:space:]]+ConfigRuleName:[[:space:]]*/ {
     rule = $0
     sub(/^[[:space:]]+ConfigRuleName:[[:space:]]*/, "", rule)
+    sub(/\r$/, "", rule)
   }
   /^[[:space:]]+SourceIdentifier:[[:space:]]*/ {
     source = $0
     sub(/^[[:space:]]+SourceIdentifier:[[:space:]]*/, "", source)
+    sub(/\r$/, "", source)
     if (rule != "") print source "\t" rule
     rule = ""
   }
@@ -403,6 +414,11 @@ else
           else .ConfigRuleName
           end
         ' "$CONFIG_RULES_FILE" | sort -u > "$DEPLOYED_RULES_FILE"
+        # Native Windows jq writes CRLF even when called from Git/MSYS Bash.
+        # Remove carriage returns before comm compares the generated list with
+        # the LF-normalized vendored template.
+        tr -d '\r' < "$DEPLOYED_RULES_FILE" > "$_TMP_DIR/${safe_pack}_deployed_rules_lf.txt"
+        mv "$_TMP_DIR/${safe_pack}_deployed_rules_lf.txt" "$DEPLOYED_RULES_FILE"
         comm -12 "$DEPLOYED_RULES_FILE" "$REFERENCE_RULES_FILE" > "$OVERLAP_FILE"
         comm -13 "$DEPLOYED_RULES_FILE" "$REFERENCE_RULES_FILE" > "$MISSING_FILE"
         comm -23 "$DEPLOYED_RULES_FILE" "$REFERENCE_RULES_FILE" > "$EXTRA_FILE"

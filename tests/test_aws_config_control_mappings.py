@@ -2,6 +2,7 @@ import importlib.util
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -69,6 +70,45 @@ def test_vendored_mappings_are_nonempty_and_internally_consistent():
         for rule, controls in document["rules"].items():
             for control in controls:
                 assert rule in document["controls"][control]["config_rules"]
+
+
+def test_fetcher_contract_defaults_to_fedramp_low():
+    repo = Path(__file__).parents[1]
+    if str(repo) not in sys.path:
+        sys.path.insert(0, str(repo))
+
+    from framework import api
+    from framework.config_loader import discover_fetchers
+    from framework.config_loader import discover_platforms
+
+    fetchers = discover_fetchers(repo)
+    fetcher = fetchers["aws_config_conformance_packs"]
+    field = fetcher.config_schema["fedramp_pack"]
+
+    assert field.required is True
+    assert field.default == "low"
+    assert field.env == "FEDRAMP_PACK"
+
+    legacy_manifest = {
+        "run": {
+            "output_dir": "./evidence",
+            "fetchers": [{"use": "aws_config_conformance_packs"}],
+        }
+    }
+    errors = api.validate(
+        legacy_manifest,
+        repo,
+        fetchers=fetchers,
+        platforms=discover_platforms(repo),
+    )
+    assert errors == []
+
+
+def test_fetcher_does_not_require_bash_mapfile():
+    fetcher = SCRIPT.parent / "fetcher.sh"
+    source = fetcher.read_text(encoding="utf-8")
+
+    assert "mapfile -t" not in source
 
 
 def test_fetcher_maps_rules_findings_and_control_compliance():
@@ -192,5 +232,7 @@ if __name__ == "__main__":
     test_parse_mapping_builds_rule_and_control_indexes()
     test_parse_mapping_includes_only_aliases_available_in_the_source()
     test_vendored_mappings_are_nonempty_and_internally_consistent()
+    test_fetcher_contract_defaults_to_fedramp_low()
+    test_fetcher_does_not_require_bash_mapfile()
     test_fetcher_maps_rules_findings_and_control_compliance()
     print("control mapping tests passed")

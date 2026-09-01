@@ -18,8 +18,9 @@ config_schema:
   fedramp_pack:
     type: string
     required: true
+    default: low
     env: FEDRAMP_PACK
-    description: FedRAMP reference conformance pack to validate against. Supported values are low and moderate.
+    description: FedRAMP reference conformance pack to validate against. Supported values are low and moderate; defaults to low for compatibility with existing manifests.
 
 target_schema:
   region:

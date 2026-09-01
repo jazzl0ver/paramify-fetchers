@@ -14,7 +14,7 @@ that an account, system, or individual control is compliant with FedRAMP or NIST
 
 | Variable | Required | Description |
 |---|---:|---|
-| `FEDRAMP_PACK` | Yes | Reference baseline and mapping to use: `low` or `moderate` |
+| `FEDRAMP_PACK` | No | Reference baseline and mapping to use: `low` (default) or `moderate` |
 | `AWS_PROFILE` | No | AWS CLI profile; when omitted, the ambient credential chain is used |
 | `AWS_DEFAULT_REGION` | No | AWS region; when omitted, AWS CLI configuration determines the region |
 | `EVIDENCE_DIR` | No | Output directory; defaults to `./evidence` |
@@ -29,9 +29,10 @@ EVIDENCE_DIR=./evidence \
 ./fetchers/aws/config_conformance_packs/fetcher.sh
 ```
 
-The manifest schema exposes `FEDRAMP_PACK` as the required `fedramp_pack`
-configuration value. AWS profile and region can be supplied per target for
-multi-account or multi-region collection.
+The manifest schema exposes `FEDRAMP_PACK` as the `fedramp_pack` configuration
+value. It defaults to `low`, preserving manifests created before this option was
+introduced. AWS profile and region can be supplied per target for multi-account
+or multi-region collection.
 
 Example Paramify manifest entry using the FedRAMP Moderate baseline for the
 `va-readonly` profile in `us-east-2`:
