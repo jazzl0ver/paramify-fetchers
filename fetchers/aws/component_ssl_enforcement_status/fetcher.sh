@@ -1,7 +1,7 @@
 #!/bin/bash
 # AWS — Component SSL/TLS Enforcement Status
 # Checks S3 bucket policies for an aws:SecureTransport HTTPS-deny statement and
-# RDS DB parameter groups for rds.force_ssl=1.
+# RDS DB parameter groups for rds.force_ssl=1 or require_secure_transport=ON.
 # Output: $EVIDENCE_DIR/aws_component_ssl_enforcement_status.json
 # Optional env (else the AWS CLI ambient identity/region): AWS_PROFILE, AWS_DEFAULT_REGION
 # Required tools: aws, jq
@@ -106,12 +106,21 @@ for db in $rds_instances; do
     fi
     enforced="false"
     for pg in $pgroups; do
-        param=$(aws rds describe-db-parameters --db-parameter-group-name "$pg" 2>/dev/null | jq -r '.Parameters[] | select(.ParameterName=="rds.force_ssl") | .ParameterValue')
+        # MySQL (including 8.4+) uses require_secure_transport; other engines
+        # such as PostgreSQL and SQL Server use rds.force_ssl.
+        param=$(aws rds describe-db-parameters --db-parameter-group-name "$pg" 2>/dev/null | jq -r '
+            any(.Parameters[]?;
+                (.ParameterName == "rds.force_ssl" and .ParameterValue == "1") or
+                (.ParameterName == "require_secure_transport" and
+                    (((.ParameterValue // "") | ascii_downcase) == "on" or
+                     .ParameterValue == "1" or
+                     ((.ParameterValue // "") | ascii_downcase) == "true")))
+        ')
         ec=$?
         if [ $ec -ne 0 ]; then
             echo "aws rds describe-db-parameters ($pg) failed (exit=$ec)" >> "$_FAILURE_LOG"
         fi
-        if [[ "$param" == "1" ]]; then
+        if [[ "$param" == "true" ]]; then
             enforced="true"
             rds_ssl_enforced=$((rds_ssl_enforced+1))
             break
