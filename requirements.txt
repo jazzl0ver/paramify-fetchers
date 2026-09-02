@@ -76,7 +76,7 @@ azure-mgmt-keyvault>=14.0.1,<15
 azure-keyvault-keys>=4.11.1,<5
 azure-mgmt-monitor>=6.0.2,<7
 azure-mgmt-recoveryservices>=4.1.0,<5
-azure-mgmt-recoveryservicesbackup>=10.0.0,<11
+azure-mgmt-recoveryservicesbackup>=10.0.0,<12
 
 # App platform and governance. azure-mgmt-resource-policy is pinned EXACTLY
 # because PolicyClient was removed from azure-mgmt-resource (25.0.0+) and its new

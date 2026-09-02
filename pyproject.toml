@@ -58,7 +58,7 @@ azure = [
     # <7 is load-bearing: 7.0.0 ships no diagnostic_settings operations at all.
     "azure-mgmt-monitor>=6.0.2,<7",
     "azure-mgmt-recoveryservices>=4.1.0,<5",
-    "azure-mgmt-recoveryservicesbackup>=10.0.0,<11",
+    "azure-mgmt-recoveryservicesbackup>=10.0.0,<12",
     "azure-mgmt-web>=11.0.1,<12",
     "azure-mgmt-databricks>=3.0.0,<4",
     # Exact: PolicyClient's new home publishes only pre-releases.
