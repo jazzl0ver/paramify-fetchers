@@ -22,7 +22,7 @@ _TARGET_ID="$(aws_target_id "$REGION")"
 OUTPUT_JSON="$OUTPUT_DIR/aws_waf_all_rules_${_TARGET_ID}.json"
 _FETCHER_TMP_JSON="$(mktemp -t aws_waf_all_rules.XXXXXX.json)"
 _FAILURE_LOG="$(mktemp -t aws_waf_all_rules_fail.XXXXXX)"
-trap 'rm -f "$_FETCHER_TMP_JSON" "$_FAILURE_LOG"' EXIT
+trap 'rm -f "$_FETCHER_TMP_JSON" "$_FAILURE_LOG" "$_AWS_ERR_LOG"' EXIT
 
 log_info() { printf '%s INFO aws_waf_all_rules %s\n' "$(date -u +'%Y-%m-%d %H:%M:%S')" "$*" >&2; }
 log_error() { printf '%s ERROR aws_waf_all_rules %s\n' "$(date -u +'%Y-%m-%d %H:%M:%S')" "$*" >&2; }
@@ -90,9 +90,9 @@ fi
 failure_count=$(wc -l < "$_FAILURE_LOG" 2>/dev/null | tr -d ' ')
 failure_count=${failure_count:-0}
 if [ "$failure_count" -gt 0 ]; then
-    _reasons="$(head -n 3 "$_FAILURE_LOG" | tr '\n' '; ')"
+    _reasons="$(head -n 3 "$_FAILURE_LOG" | awk '{printf "%s%s", sep, $0; sep="; "}')"
     [ "$failure_count" -gt 3 ] && _reasons="${_reasons}(+$((failure_count - 3)) more)"
-    report_failure "$failure_count AWS API failure(s); first: $_reasons" partial_failure
+    aws_report_failures "$failure_count" "$_reasons"
     exit 1
 fi
 

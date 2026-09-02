@@ -10,6 +10,67 @@ schemas and the `paramify` CLI — not the internal code.
 
 ## [Unreleased]
 
+## [0.5.1-beta] - 2026-09-02
+
+### Fixed
+
+- **An AWS failure now says *why*, not just which call broke.** 0.5.0-beta got
+  all 80 AWS fetchers reporting through `$FETCHER_STATUS_FILE`, but 250 of their
+  CLI calls ran as `aws ... 2>/dev/null` and the matching log line recorded only
+  a label. Of 310 failure records, 8 carried the AWS error text and **302 carried
+  none** — so expired credentials, a missing IAM permission and throttling all
+  arrived looking identical, while being three unrelated fixes. All 80 also
+  passed a hardcoded `partial_failure`, so `metadata.error_code` carried no
+  information for the largest category in the repo.
+
+  Both are fixed. `metadata.error` now carries the AWS error text behind the
+  calls that failed, and `metadata.error_code` is derived from it:
+
+  ```json
+  {
+    "error": "2 AWS API failure(s); first: aws sts get-caller-identity failed; aws ec2 describe-security-groups (list) failed (exit=254) -- aws: [ERROR]: An error occurred (InvalidClientTokenId) ... The security token included in the request is invalid. | aws: [ERROR]: An error occurred (AuthFailure) ... AWS was not able to validate the provided access credentials",
+    "code": "auth_failed"
+  }
+  ```
+
+  That `code` is what the not-enabled classification work and the
+  deleted-mid-scan decision were both waiting on.
+
+  **No call site was rewritten.** `aws` in
+  [`fetchers/aws/_shared/aws.sh`](fetchers/aws/_shared/aws.sh) is now a shell
+  function shadowing the CLI, so all 250 calls keep their exact text — including
+  `2>/dev/null` — and still have their stderr captured. stdout, stderr and the
+  exit code reach the caller unchanged, so the `2>"$_ERR"` + `grep` pattern the
+  not-enabled check depends on still works, synchronously. The one constraint
+  this adds: a fetcher must reach the CLI as plain `aws`, never `command aws` or
+  an absolute path, or its calls go unclassified. A test enforces that.
+
+  Classification is regex over botocore's wording, which is the only signal a
+  CLI-based fetcher has — the SDK-based categories read a typed exception
+  instead. A future AWS rewording can therefore downgrade a code to
+  `partial_failure`; that is the safe direction, and
+  `tests/test_aws_failure_classification.py` pins the current wordings verbatim.
+
+- **A not-enabled service still exits 0.** The wrapper captures the
+  `SubscriptionRequiredException` stderr like any other, so this was the
+  regression risk worth naming: had it been recorded as a failure, every account
+  without Macie, Inspector, or Shield would have started reporting a spurious
+  `partial_failure`. `aws_service_unavailable` is still checked first and
+  short-circuits, verified end-to-end and pinned by a test.
+
+- **Failure reasons read correctly again.** The separator was built with
+  `tr '\n' '; '`, and `tr` maps one character to one character — so it emitted
+  `;` with no space and left a trailing one before the `(+N more)` suffix.
+
+### Changed
+
+- **Corrected the 0.5.0-beta entry below.** It said `metadata.error` "now carries
+  the actual cause", and illustrated it with a report rich in AWS error text.
+  That example came from one of the 8 call sites that captured stderr, out of
+  310 — it was not representative, and for AWS the accurate claim at 0.5.0-beta
+  was that the report *names the call that failed*. The entry now says so, and
+  this release is what makes the original claim true.
+
 ## [0.5.0-beta] - 2026-09-02
 
 ### Added
@@ -72,9 +133,11 @@ schemas and the `paramify` CLI — not the internal code.
   failure log whose only reader, across all 80, was `wc -l`, and the exit trap
   deleted it.
 
-  `metadata.error` now carries the actual cause and `metadata.error_code` one of
-  seven closed values (`auth_failed`, `not_authorized`, `target_unreachable`,
-  `rate_limited`, `bad_config`, `partial_failure`, `internal_error`). Forcing a
+  `metadata.error` now names the call that failed — for AWS that is the call
+  label, not yet the AWS error text behind it (corrected in 0.5.1-beta above) —
+  and `metadata.error_code` is one of seven closed values (`auth_failed`,
+  `not_authorized`, `target_unreachable`, `rate_limited`, `bad_config`,
+  `partial_failure`, `internal_error`). Forcing a
   credential failure on `aws_guard_duty_findings` reported
   `Encountered 2 API failures during collection` before. It now reports:
 
@@ -686,7 +749,8 @@ change before 1.0 (see [`docs/versioning.md`](docs/versioning.md)).
 - TUI restyled — border titles, status pills, denser controls, and hatched empty
   states.
 
-[Unreleased]: https://github.com/paramify/paramify-fetchers/compare/v0.5.0-beta...HEAD
+[Unreleased]: https://github.com/paramify/paramify-fetchers/compare/v0.5.1-beta...HEAD
+[0.5.1-beta]: https://github.com/paramify/paramify-fetchers/compare/v0.5.0-beta...v0.5.1-beta
 [0.5.0-beta]: https://github.com/paramify/paramify-fetchers/compare/v0.4.0-beta...v0.5.0-beta
 [0.4.0-beta]: https://github.com/paramify/paramify-fetchers/compare/v0.3.1-beta...v0.4.0-beta
 [0.3.1-beta]: https://github.com/paramify/paramify-fetchers/compare/v0.3.0-beta...v0.3.1-beta

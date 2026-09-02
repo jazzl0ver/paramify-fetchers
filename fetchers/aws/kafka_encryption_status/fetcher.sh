@@ -28,7 +28,7 @@ _TARGET_ID="$(aws_target_id "$REGION")"
 OUTPUT_JSON="$OUTPUT_DIR/aws_kafka_encryption_status_${_TARGET_ID}.json"
 _FETCHER_TMP_JSON="$(mktemp -t aws_kafka_encryption_status.XXXXXX.json)"
 _FAILURE_LOG="$(mktemp -t aws_kafka_encryption_status_fail.XXXXXX)"
-trap 'rm -f "$_FETCHER_TMP_JSON" "$_FAILURE_LOG"' EXIT
+trap 'rm -f "$_FETCHER_TMP_JSON" "$_FAILURE_LOG" "$_AWS_ERR_LOG"' EXIT
 
 log_info() { printf '%s INFO aws_kafka_encryption_status %s\n' "$(date -u +'%Y-%m-%d %H:%M:%S')" "$*" >&2; }
 log_error() { printf '%s ERROR aws_kafka_encryption_status %s\n' "$(date -u +'%Y-%m-%d %H:%M:%S')" "$*" >&2; }
@@ -52,7 +52,7 @@ total_clusters=0
 encrypted_clusters=0
 
 _ERR="$(mktemp -t aws_kafka_encryption_status_err.XXXXXX)"
-trap 'rm -f "$_FETCHER_TMP_JSON" "$_FAILURE_LOG" "$_ERR"' EXIT
+trap 'rm -f "$_FETCHER_TMP_JSON" "$_FAILURE_LOG" "$_ERR" "$_AWS_ERR_LOG"' EXIT
 cluster_arns=$(aws kafka list-clusters-v2 --query 'ClusterInfoList[*].ClusterArn' --output text 2>"$_ERR")
 list_exit=$?
 if [ $list_exit -ne 0 ] && aws_service_unavailable "$_ERR"; then
@@ -108,9 +108,9 @@ jq --arg total "$total_clusters" --arg encrypted "$encrypted_clusters" --arg per
 failure_count=$(wc -l < "$_FAILURE_LOG" 2>/dev/null | tr -d ' ')
 failure_count=${failure_count:-0}
 if [ "$failure_count" -gt 0 ]; then
-    _reasons="$(head -n 3 "$_FAILURE_LOG" | tr '\n' '; ')"
+    _reasons="$(head -n 3 "$_FAILURE_LOG" | awk '{printf "%s%s", sep, $0; sep="; "}')"
     [ "$failure_count" -gt 3 ] && _reasons="${_reasons}(+$((failure_count - 3)) more)"
-    report_failure "$failure_count AWS API failure(s); first: $_reasons" partial_failure
+    aws_report_failures "$failure_count" "$_reasons"
     exit 1
 fi
 
