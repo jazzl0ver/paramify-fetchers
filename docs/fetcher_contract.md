@@ -266,15 +266,15 @@ These are accepted violations during the porting period. Each is tracked, scoped
   `error`/`error_code` the runner already read from `$FETCHER_STATUS_FILE`. The
   classification reaches every evidence envelope but not the run index, so
   "what failed in this run, and why" still means opening each file. Additive fix.
-- **The `aws` family reports a reason but not a classification.** All 80 write
-  `$FETCHER_STATUS_FILE`, and all 80 pass `partial_failure` as the `code`: they
-  count and quote the calls that broke rather than classifying why. The reason
-  text carries that information; the `code` does not yet discriminate
-  `auth_failed` from `rate_limited` from `not_authorized`. The other bash
-  families already classify (`knowbe4` uses `bad_config` and `internal_error`,
-  `k8s` uses `target_unreachable`, `checkov` uses `bad_config`), so this is an
-  `aws` gap, not a runtime limitation — and it is what the not-enabled work
-  needs.
+- **`aws` classifies from stderr text, not from a typed error code.** Resolved in
+  0.5.1: `aws` in `aws/_shared/aws.sh` is a shell function shadowing the CLI, so
+  all 250 `2>/dev/null` call sites keep their exact text and still have their
+  stderr captured, and `aws_classify_code` maps it onto the closed set. The
+  matching is regex over botocore's English wording, which is the only signal a
+  CLI-based fetcher has — the SDK-based categories read a typed exception
+  instead. So a future AWS CLI rewording can silently downgrade a classification
+  to `partial_failure`, which is the safe direction but is still a downgrade.
+  `tests/test_aws_failure_classification.py` pins the current wordings verbatim.
 - **The payload failure ledger is not emitted by the bash families.**
   `metadata.partial_failure` + `metadata.api_failures[]` (§ Output) is a SHOULD,
   and `azure`/`gcp` emit it; the 80 `aws` payloads carry neither. Adding keys to
@@ -295,10 +295,17 @@ When in doubt, mirror the shape of one of these:
   shape, plus `classify_failure_code` for picking the `code`. It still spells the
   status write `write_status`; that is the rename the clause above calls for.
 - **Single-target bash:** [`fetchers/aws/guard_duty_findings/`](../fetchers/aws/guard_duty_findings/)
-  — sources `aws/_shared/aws.sh` (which re-exports `report_failure`), accumulates
-  each failed call into `$_FAILURE_LOG`, and reports the count plus the first
-  three reasons on exit. Mirror its failure path; note that it passes a fixed
-  `partial_failure` code rather than classifying (see Interim clauses).
+  — sources `aws/_shared/aws.sh`, accumulates each failed call into
+  `$_FAILURE_LOG`, and ends with `aws_report_failures "$failure_count"
+  "$_reasons"`, which adds the captured AWS error text and a classified `code`.
+  Mirror that: a bash fetcher should never type a `code` literal, because a
+  literal is how all 80 of these came to report `partial_failure` for every
+  failure regardless of cause.
+- **Not-enabled vs. failed:** the same fetcher, and
+  [`fetchers/aws/macie_data_discovery/`](../fetchers/aws/macie_data_discovery/)
+  — `aws_service_unavailable` is checked **before** anything is written to the
+  failure log, so a service that is simply not in use records its status and
+  exits 0 instead of reporting a failure.
 
 Two fetchers were cited here until this revision — `okta/phishing_resistant_mfa`
 (single-target Python) and `okta/authenticators` (single-target bash). Neither

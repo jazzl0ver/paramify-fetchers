@@ -30,7 +30,7 @@ OUTPUT_JSON="$OUTPUT_DIR/aws_shield_dos_protection_${_TARGET_ID}.json"
 _FETCHER_TMP_JSON="$(mktemp -t aws_shield_dos_protection.XXXXXX.json)"
 _FAILURE_LOG="$(mktemp -t aws_shield_dos_protection_fail.XXXXXX)"
 _ERR="$(mktemp -t aws_shield_dos_protection_err.XXXXXX)"
-trap 'rm -f "$_FETCHER_TMP_JSON" "$_FAILURE_LOG" "$_ERR"' EXIT
+trap 'rm -f "$_FETCHER_TMP_JSON" "$_FAILURE_LOG" "$_ERR" "$_AWS_ERR_LOG"' EXIT
 
 log_info() { printf '%s INFO aws_shield_dos_protection %s\n' "$(date -u +'%Y-%m-%d %H:%M:%S')" "$*" >&2; }
 log_error() { printf '%s ERROR aws_shield_dos_protection %s\n' "$(date -u +'%Y-%m-%d %H:%M:%S')" "$*" >&2; }
@@ -111,9 +111,9 @@ fi
 failure_count=$(wc -l < "$_FAILURE_LOG" 2>/dev/null | tr -d ' ')
 failure_count=${failure_count:-0}
 if [ "$failure_count" -gt 0 ]; then
-    _reasons="$(head -n 3 "$_FAILURE_LOG" | tr '\n' '; ')"
+    _reasons="$(head -n 3 "$_FAILURE_LOG" | awk '{printf "%s%s", sep, $0; sep="; "}')"
     [ "$failure_count" -gt 3 ] && _reasons="${_reasons}(+$((failure_count - 3)) more)"
-    report_failure "$failure_count AWS API failure(s); first: $_reasons" partial_failure
+    aws_report_failures "$failure_count" "$_reasons"
     exit 1
 fi
 

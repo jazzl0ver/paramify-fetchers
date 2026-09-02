@@ -64,3 +64,93 @@ aws_text_list() {
     *) printf '%s' "$1" ;;
   esac
 }
+
+# --------------------------------------------------------------------------- #
+# Failure classification
+#
+# The problem this solves: 250 of the AWS CLI calls in this tree run as
+# `aws ... 2>/dev/null`, and the matching failure-log line records only a label
+# ("aws ec2 describe-security-groups (list) failed"). So a triager learned WHICH
+# call broke but never WHY -- expired credentials, a missing IAM permission and
+# throttling all looked identical, while being three unrelated fixes.
+#
+# Rewriting those 250 call sites was the obvious approach and the wrong one. The
+# `aws` below is a shell FUNCTION that shadows the CLI, so every existing call
+# site keeps its exact text and still gets its stderr captured. That works only
+# because no fetcher reaches the binary another way -- no `command aws`, no
+# absolute path, no `xargs aws`. Keep it that way, or those calls go unclassified.
+# --------------------------------------------------------------------------- #
+
+# One line per failed call, accumulated across the run. A FILE, not a variable:
+# every call site is `out=$(aws ...)`, which runs the function in a subshell, so
+# a variable assignment would be discarded with it. Created here rather than in
+# each fetcher so no per-fetcher line is needed; the fetchers' own EXIT traps
+# remove it.
+_AWS_ERR_LOG="$(mktemp -t aws_shared_err.XXXXXX)"
+
+# aws ... -- the real CLI with stderr captured for classification. stdout, stderr
+# and the exit code all reach the caller unchanged, so `2>/dev/null`,
+# `2>"$_ERR"` + grep (the not-enabled check), and `$?` all behave exactly as
+# before. Only failures are recorded; a successful call writes nothing.
+aws() {
+  local _err _ec
+  _err="$(mktemp -t aws_call_err.XXXXXX)" || { command aws "$@"; return $?; }
+  command aws "$@" 2>"$_err"
+  _ec=$?
+  if [ "$_ec" -ne 0 ] && [ -s "$_err" ]; then
+    # printf '%s\n', not a bare pipe: `tr` turns the trailing newline into a
+    # space, so the text would arrive unterminated and successive failures would
+    # concatenate onto ONE line -- making any `wc -l` of this file read 0.
+    printf '%s\n' "$(tr '\n\r\t' '   ' < "$_err" | tr -s ' ' | cut -c1-500)" >> "$_AWS_ERR_LOG"
+  fi
+  # Hand the caller its stderr back, synchronously, so a grep on the line after
+  # the call still sees it. Not `tee`/process substitution, which races.
+  cat "$_err" >&2
+  rm -f "$_err"
+  return $_ec
+}
+
+# aws_classify_code [file] -- echoes the contract `code` for the AWS error text
+# in <file> (default $_AWS_ERR_LOG), else "partial_failure". Ordered
+# most-specific-first and matched against the whole file, so a run whose real
+# problem is an expired credential is not reported as a generic partial failure
+# just because a later call also 403'd.
+#
+# Deliberately no "not_enabled": it is not in the contract's closed set, because
+# a service that is not in use is valid evidence and exits 0 -- see
+# aws_service_unavailable, which is checked BEFORE this and short-circuits.
+aws_classify_code() {
+  local f="${1:-$_AWS_ERR_LOG}"
+  [ -s "$f" ] || { printf 'partial_failure'; return 0; }
+  if grep -qiE 'ExpiredToken|InvalidClientTokenId|UnrecognizedClientException|SignatureDoesNotMatch|Unable to locate credentials|The security token included in the request is (expired|invalid)|NoCredentialProviders|sso session .* is expired' "$f"; then
+    printf 'auth_failed'
+  elif grep -qiE 'AccessDenied|UnauthorizedOperation|not authorized to perform|AuthorizationError|explicit deny|\(403\)' "$f"; then
+    printf 'not_authorized'
+  elif grep -qiE 'Throttling|ThrottlingException|TooManyRequests|RequestLimitExceeded|SlowDown|Rate exceeded|\(429\)' "$f"; then
+    printf 'rate_limited'
+  elif grep -qiE 'Could not connect to the endpoint URL|EndpointConnectionError|ConnectTimeoutError|ReadTimeoutError|Connection was closed|Name or service not known|[Tt]emporary failure in name resolution|\(50[34]\)' "$f"; then
+    printf 'target_unreachable'
+  elif grep -qiE 'InvalidParameterValue|ValidationError|ValidationException|MalformedPolicyDocument|Invalid region|Invalid( |-)?ARN|InvalidInput' "$f"; then
+    printf 'bad_config'
+  else
+    printf 'partial_failure'
+  fi
+}
+
+# aws_report_failures <count> <label-reasons> -- report a partial collection to
+# the runner: the caller's call labels, the AWS error text behind them, and a
+# classified code. Replaces a hardcoded `partial_failure` at the 80 call sites.
+#
+# Both halves are included on purpose. The labels say which call broke and are
+# always present; the error text says why and is present whenever the CLI wrote
+# anything to stderr. Reporting only the second would lose attribution on a call
+# that failed silently.
+aws_report_failures() {
+    local count="$1" reasons="$2" detail=""
+    if [ -s "$_AWS_ERR_LOG" ]; then
+        detail="$(head -n 3 "$_AWS_ERR_LOG" | awk '{printf "%s%s", sep, $0; sep=" | "}')"
+        detail=" -- ${detail}"
+    fi
+    report_failure "$count AWS API failure(s); first: ${reasons}${detail}" \
+        "$(aws_classify_code)"
+}
