@@ -2,10 +2,11 @@ name: CI
 
 # The public API surface — schemas + manifest + envelope + the `paramify` CLI —
 # is the contract (CLAUDE.md). These jobs gate it:
-#   test    — every fetcher.yaml / category file validates against its JSON Schema
-#   smoke   — the CLI discovery surface works across all fetchers
-#   lint    — the framework's own code passes ruff + mypy
-#   secrets — no credentials in the tree or its full git history
+#   test      — every fetcher.yaml / category file validates against its JSON Schema
+#   azure-sdk — the Azure SDK operation groups the fetchers read still exist
+#   smoke     — the CLI discovery surface works across all fetchers
+#   lint      — the framework's own code passes ruff + mypy
+#   secrets   — no credentials in the tree or its full git history
 # Fetchers can't be integration-tested here (no live tenants); that signal comes
 # from recorded fixtures + the scheduled dogfood run (SEC-38).
 
@@ -64,6 +65,35 @@ jobs:
       # fetcher.yaml and _categories/*.yaml.
       - name: pytest
         run: pytest -q
+
+  azure-sdk:
+    name: azure-sdk (surface)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      # The only job that installs the azure extra. The `test` matrix
+      # deliberately does not (23 packages, heavier than everything else here
+      # combined), which left azure dependency bumps ungated: PR #59 relaxed the
+      # load-bearing azure-mgmt-monitor<7 and passed all twelve checks, because
+      # nothing in the suite had ever imported an Azure SDK.
+      - run: python -m pip install -e ".[dev,azure]"
+      # A guard, not a formality. tests/test_azure_sdk_surface.py opens with
+      # `pytest.importorskip`, so if the extra failed to resolve the module would
+      # SKIP and this job would go green having verified nothing — reinstating
+      # the exact false confidence it exists to remove. Fail loudly instead.
+      - name: assert the azure extra actually installed
+        run: python -c "import azure.mgmt.monitor, azure.mgmt.network, msgraph"
+      # No credentials and no network: azure-mgmt clients build their operation
+      # groups at construction, so a fake credential is enough to introspect the
+      # surface the fetchers read. Runs unconditionally rather than behind a path
+      # filter — a gate that only sometimes runs is not a gate.
+      - name: pytest (azure SDK surface)
+        run: pytest -q tests/test_azure_sdk_surface.py
 
   smoke:
     name: smoke (CLI discovery)

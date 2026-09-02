@@ -29,6 +29,19 @@ updates:
       python-minor-patch:
         patterns: ["*"]
         update-types: ["minor", "patch"]
+    ignore:
+      # azure-mgmt-monitor 7.0.0 REMOVED the `diagnostic_settings` operation group
+      # that 6.0.2 exposes under v2021_05_01_preview. Three fetchers read it —
+      # azure/diagnostic_settings, azure/container_registry_configuration and
+      # azure/activity_log_alerts — so a major bump degrades all three to a
+      # collection failure. 7.0.0 is PyPI's current stable, which means an
+      # unconstrained resolve lands on the broken release rather than skipping it.
+      #
+      # Closed as PR #59. Lift this only once a release restores the operation
+      # group; the `<7` ceiling in pyproject.toml/requirements.txt is the pin
+      # itself, and this entry just stops Dependabot reopening the same PR.
+      - dependency-name: azure-mgmt-monitor
+        update-types: ["version-update:semver-major"]
 
   # --- GitHub Actions: .github/workflows/ci.yml ---------------------------------
   # Cheap to keep current and the most commonly stale thing in a repo — actions get
