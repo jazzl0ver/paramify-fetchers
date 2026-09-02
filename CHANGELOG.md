@@ -64,6 +64,37 @@ schemas and the `paramify` CLI — not the internal code.
 
 ### Changed
 
+- **Two Azure SDK pins widened**, and CI can now tell whether that is safe.
+  `azure-mgmt-network` moves from `<32` to `<33` and
+  `azure-mgmt-recoveryservicesbackup` from `<11` to `<12`, in both
+  `pyproject.toml` and `requirements.txt`. Anyone installing `.[azure]` gets the
+  new majors.
+
+  The reason this is worth an entry: **CI installed `.[dev]` and `.[dev,tui]` but
+  never `.[azure]`, so no test in the suite had ever imported an Azure SDK.**
+  Every `azure-mgmt` major that has broken this category broke it silently —
+  wrong or empty evidence rather than an exception — which meant a dependency PR
+  widening an Azure pin went green on evidence that proved nothing about Azure.
+  One did
+  exactly that: it relaxed the load-bearing `azure-mgmt-monitor<7` and passed all
+  twelve checks, while 7.0.0 removes the `diagnostic_settings` operation group
+  that three fetchers read.
+
+  A new `azure-sdk (surface)` job is now the only one that installs the Azure
+  extra, and it pins the surface in the shapes a major bump actually takes it
+  away: relocated client imports, vanished operation groups, vanished methods,
+  and the model-field renames that produce wrong rather than empty evidence — 56
+  checks across all 27 Azure fetchers. It asserts the extra really resolved
+  before running, because the module opens with `pytest.importorskip` and a
+  failed install would otherwise skip and report green. `azure-mgmt-monitor`
+  majors are held back until the operation group returns; a test fails when it
+  does, so the pin and the hold get lifted together instead of going stale.
+
+- **The container base image moves to Python 3.14** (`deploy/Dockerfile`:
+  `python:3.12-slim` → `python:3.14-slim`), and **CI now tests on 3.14** as well
+  as 3.10–3.13. The interpreter the Dockerfile and the dev environments actually
+  run was previously the one nothing gated.
+
 - **Corrected the 0.5.0-beta entry below.** It said `metadata.error` "now carries
   the actual cause", and illustrated it with a report rich in AWS error text.
   That example came from one of the 8 call sites that captured stderr, out of
