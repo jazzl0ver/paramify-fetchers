@@ -1,0 +1,55 @@
+name: crowdstrike_prevention_policies
+version: 0.1.0
+description: >-
+  Pulls CrowdStrike Falcon prevention policies with their full setting trees and
+  host-group assignments, showing which endpoint protections are enforced and
+  which policies are enabled and assigned.
+category: crowdstrike
+
+supports_targets: false
+
+runtime:
+  type: python
+  entry: fetcher.py
+  timeout: 900
+
+output:
+  type: json
+  path: crowdstrike_prevention_policies.json
+
+secrets:
+  - name: client_id
+    env: CROWDSTRIKE_CLIENT_ID
+  - name: client_secret
+    env: CROWDSTRIKE_CLIENT_SECRET
+
+config_schema:
+  api_base_url:
+    type: string
+    required: false
+    env: CROWDSTRIKE_API_BASE_URL
+    description: Full Falcon API base URL. Overrides cloud_region.
+  cloud_region:
+    type: string
+    required: false
+    env: CROWDSTRIKE_CLOUD_REGION
+    description: >-
+      Falcon cloud the tenant lives in — us-1, us-2, eu-1, us-gov-1, us-gov-2.
+      Defaults to us-1 (commercial).
+
+evidence_set:
+  reference_id: EVD-CS-PREVENTION-POLICIES
+  name: CrowdStrike Prevention Policies
+  instructions: >-
+    Script: fetcher.py. Authenticates at POST /oauth2/token and pages
+    GET /policy/combined/prevention/v1 (integer-offset pagination), which
+    returns each policy with its prevention_settings tree and assigned host
+    groups. Summarizes enabled/disabled policies, platform coverage, unassigned
+    policies, and which protection settings are switched on.
+  description: >-
+    Endpoint prevention policy configuration from CrowdStrike Falcon,
+    evidencing that host protections are centrally defined, consistently
+    configured, and assigned to managed endpoints.
+
+ksis:
+  - KSI-CNA-EIS

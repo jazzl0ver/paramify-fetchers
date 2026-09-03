@@ -61,6 +61,20 @@ fetchers/demo/audit_logging/
 fetchers/demo/encryption_at_rest/
 fetchers/demo/vuln_scan/
 
+# --- EKS demo deploy bundle (demo-only, NOT public) ---
+# Restored from 549b98a^ for the live customer demo. Commit 549b98a deliberately
+# removed deploy/k8s/ from the public tree ("we don't want to prescribe that level
+# of deployment"), and that call stands — this is presenter-local material only.
+# Recover it again with: git checkout 549b98a^ -- deploy/k8s/
+deploy/k8s/
+
+# --- ECS/Fargate demo deploy bundle (demo-only, NOT public) ---
+# Same call as deploy/k8s/ above: presenter-local material, not deployment advice
+# we want to prescribe in the public tree. Also holds secrets.json (real
+# credentials), which .dockerignore keeps out of the image but only this keeps
+# out of git.
+deploy/ecs/
+
 # --- Claude Code agent worktrees (tool-generated; each is its own git repo) ---
 .claude/worktrees/
 
@@ -72,3 +86,6 @@ fetchers/demo/vuln_scan/
 
 # --- Manifests ---
 manifests/*
+
+# Downloaded third-party CrowdStrike response captures (tools/crowdstrike_corpus.py)
+tests/fixtures/crowdstrike_corpus/

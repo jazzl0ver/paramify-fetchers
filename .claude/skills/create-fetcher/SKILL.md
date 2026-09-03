@@ -171,13 +171,19 @@ single confirmation before building.
    `docs/porting_playbook.md` §"Say why you failed":
    - log it at error level, **after** the "Evidence saved" line (the runner's
      fallback takes the *tail* of stderr, so an INFO line logged last wins);
-   - write `{"error": "…", "code": "…"}` to `$FETCHER_STATUS_FILE`, which is what
+   - call `report_failure "<reason>" <code>` — imported from `fetchers/_lib/`
+     (Python `from fetcher_status import report_failure`, bash
+     `source "$(dirname "$0")/../../_lib/status.sh"`), never reimplemented — which
+     writes `{"error": "…", "code": "…"}` to `$FETCHER_STATUS_FILE`. That is what
      lands in the envelope's `metadata.error` and what Paramify shows the person
      triaging the failure.
 
    Skipping this is how a failed run ends up reporting "Evidence saved to …" as
-   its error (issue #24). Do NOT rely on putting the error in the payload — the
-   runner never reads inside it.
+   its error (issue #24). The runner never reads inside your payload, so an error
+   recorded only there cannot reach `metadata.error`. Do record it there as well
+   though — `metadata.partial_failure` plus `metadata.api_failures[]` of
+   `{operation, type, message}`, that shape exactly — so the evidence file is
+   honest to whoever opens it. See `docs/fetcher_contract.md` § Output.
 
 7. If bash: `chmod +x fetchers/<category>/<short_name>/fetcher.sh`.
 

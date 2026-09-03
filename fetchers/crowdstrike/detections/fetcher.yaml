@@ -1,0 +1,70 @@
+name: crowdstrike_detections
+version: 0.1.0
+description: >-
+  Pulls CrowdStrike Falcon detection alerts raised over a configurable lookback
+  window and summarizes them by severity, status, MITRE tactic/technique, and
+  time-to-resolution.
+category: crowdstrike
+
+supports_targets: false
+
+runtime:
+  type: python
+  entry: fetcher.py
+  timeout: 1800
+
+output:
+  type: json
+  path: crowdstrike_detections.json
+
+secrets:
+  - name: client_id
+    env: CROWDSTRIKE_CLIENT_ID
+  - name: client_secret
+    env: CROWDSTRIKE_CLIENT_SECRET
+
+config_schema:
+  api_base_url:
+    type: string
+    required: false
+    env: CROWDSTRIKE_API_BASE_URL
+    description: Full Falcon API base URL. Overrides cloud_region.
+  cloud_region:
+    type: string
+    required: false
+    env: CROWDSTRIKE_CLOUD_REGION
+    description: >-
+      Falcon cloud the tenant lives in — us-1, us-2, eu-1, us-gov-1, us-gov-2.
+      Defaults to us-1 (commercial).
+  lookback_days:
+    type: integer
+    required: false
+    env: CROWDSTRIKE_DETECTION_LOOKBACK_DAYS
+    default: 30
+    description: >-
+      How far back to collect alerts. FedRAMP 20x expects machine-validated
+      evidence at least every 3 days; the window only needs to cover the
+      reporting period, not the full history.
+  detection_filter:
+    type: string
+    required: false
+    env: CROWDSTRIKE_DETECTION_FILTER
+    description: >-
+      Explicit FQL filter for the alert query. Overrides lookback_days
+      entirely when set.
+
+evidence_set:
+  reference_id: EVD-CS-DETECTIONS
+  name: CrowdStrike Falcon Detections
+  instructions: >-
+    Script: fetcher.py. Authenticates at POST /oauth2/token, queries alert
+    composite IDs via GET /alerts/queries/alerts/v2 filtered to the lookback
+    window (integer-offset pagination), and resolves them in batches of 100 via
+    POST /alerts/entities/alerts/v2. Summarizes severity, status, MITRE
+    tactic/technique and time-to-resolution.
+  description: >-
+    Endpoint detection alerts from CrowdStrike Falcon, evidencing that security
+    events are centrally captured, triaged and reviewed.
+
+ksis:
+  - KSI-MLA-RVL

@@ -1,0 +1,56 @@
+# End-to-end run manifest: the full CrowdStrike Falcon fetcher set.
+#
+# All five fetchers share one OAuth2 API client, so the same two secrets are
+# wired into each. Set before running:
+#
+#   export CROWDSTRIKE_CLIENT_ID=<Falcon API client ID>
+#   export CROWDSTRIKE_CLIENT_SECRET=<Falcon API client secret>
+#   export CROWDSTRIKE_CLOUD_REGION=us-gov-1     # FedRAMP tenants; omit for us-1
+#
+# See fetchers/crowdstrike/README.md for creating the API client and the exact
+# read scopes each fetcher needs.
+#
+# To rehearse the whole pipeline with no Falcon tenant at all, start the local
+# test double and point the base URL at it:
+#
+#   python tools/crowdstrike_mock.py --port 8787
+#   export CROWDSTRIKE_API_BASE_URL=http://127.0.0.1:8787
+#   export CROWDSTRIKE_CLIENT_ID=mock-id CROWDSTRIKE_CLIENT_SECRET=mock-secret
+
+run:
+  output_dir: ./evidence
+  fetchers:
+    - use: crowdstrike_hosts
+      secrets:
+        client_id: ${env:CROWDSTRIKE_CLIENT_ID}
+        client_secret: ${env:CROWDSTRIKE_CLIENT_SECRET}
+      config:
+        stale_host_days: 30
+
+    - use: crowdstrike_spotlight_vulnerabilities
+      secrets:
+        client_id: ${env:CROWDSTRIKE_CLIENT_ID}
+        client_secret: ${env:CROWDSTRIKE_CLIENT_SECRET}
+      config:
+        # Spotlight requires a filter. Widen this to include 'closed' when the
+        # evidence needs to show remediation history rather than current state.
+        vulnerability_filter: "status:['open','reopen']"
+
+    - use: crowdstrike_detections
+      secrets:
+        client_id: ${env:CROWDSTRIKE_CLIENT_ID}
+        client_secret: ${env:CROWDSTRIKE_CLIENT_SECRET}
+      config:
+        lookback_days: 30
+
+    - use: crowdstrike_prevention_policies
+      secrets:
+        client_id: ${env:CROWDSTRIKE_CLIENT_ID}
+        client_secret: ${env:CROWDSTRIKE_CLIENT_SECRET}
+
+    - use: crowdstrike_zero_trust_assessment
+      secrets:
+        client_id: ${env:CROWDSTRIKE_CLIENT_ID}
+        client_secret: ${env:CROWDSTRIKE_CLIENT_SECRET}
+      config:
+        include_host_assessments: false

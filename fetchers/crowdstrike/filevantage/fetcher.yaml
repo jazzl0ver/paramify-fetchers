@@ -1,0 +1,68 @@
+name: crowdstrike_filevantage
+version: 0.1.0
+description: >-
+  Pulls CrowdStrike Falcon FileVantage file integrity changes recorded over a
+  lookback window and summarizes them by action type, monitored entity type,
+  governing policy, host and severity.
+category: crowdstrike
+
+supports_targets: false
+
+runtime:
+  type: python
+  entry: fetcher.py
+  timeout: 900
+
+output:
+  type: json
+  path: crowdstrike_filevantage.json
+
+secrets:
+  - name: client_id
+    env: CROWDSTRIKE_CLIENT_ID
+  - name: client_secret
+    env: CROWDSTRIKE_CLIENT_SECRET
+
+config_schema:
+  api_base_url:
+    type: string
+    required: false
+    env: CROWDSTRIKE_API_BASE_URL
+    description: >-
+      Full Falcon API base URL. Overrides cloud_region. Set this for GovCloud or
+      to point the fetcher at a test double.
+  cloud_region:
+    type: string
+    required: false
+    env: CROWDSTRIKE_CLOUD_REGION
+    description: >-
+      Falcon cloud the tenant lives in — us-1, us-2, us-3, eu-1, us-gov-1,
+      us-gov-2. Defaults to us-1 (commercial). FedRAMP tenants are typically
+      us-gov-1.
+  lookback_days:
+    type: integer
+    required: false
+    env: CROWDSTRIKE_FILEVANTAGE_LOOKBACK_DAYS
+    default: 30
+    description: >-
+      How far back to collect recorded file integrity changes. A busy estate can
+      produce a very large window — the query pages at 5000 ids per call.
+
+evidence_set:
+  reference_id: EVD-CS-FILEVANTAGE
+  name: CrowdStrike Falcon File Integrity Changes
+  instructions: >-
+    Script: fetcher.py. Authenticates at POST /oauth2/token, enumerates change
+    IDs via GET /filevantage/queries/changes/v3 (after-cursor pagination, 5000
+    per page) filtered to the lookback window on action_timestamp, then resolves
+    them in batches of 500 via GET /filevantage/entities/changes/v2 (ids as
+    repeated query parameters). Summarizes action types, monitored entity types,
+    governing policies, hosts and severities.
+  description: >-
+    File integrity monitoring records from CrowdStrike Falcon FileVantage,
+    evidencing that modifications to monitored files and registry keys are
+    detected, attributed to a host and a governing policy, and retained for
+    review.
+
+ksis:
+  - KSI-CMT-LMC

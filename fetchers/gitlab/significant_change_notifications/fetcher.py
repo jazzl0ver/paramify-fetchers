@@ -50,6 +50,13 @@ import requests
 from dotenv import load_dotenv
 from jsonschema import Draft202012Validator, FormatChecker
 
+# The shared failure-reporting helper lives in fetchers/_lib/ — the same import
+# mechanism as a category `_shared` module, one directory up.
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR.parents[1] / "_lib"))
+
+from fetcher_status import report_failure  # noqa: E402
+
 logger = logging.getLogger("gitlab_significant_change_notifications")
 
 SCHEMA_PATH = Path(__file__).parent / "schemas" / "fedramp_scn_2026-06-24.json"
@@ -224,18 +231,6 @@ PLACEHOLDER_RE = re.compile(
     )$""",
     re.IGNORECASE | re.VERBOSE,
 )
-
-
-def report_failure(reason: str, code: Optional[str] = None) -> None:
-    """Report why this run failed; the runner puts it in the envelope's metadata.error.
-
-    Without it the runner falls back to the tail of stderr — which on the way out
-    is the "Evidence saved" line. See docs/fetcher_contract.md § Output.
-    """
-    path = os.environ.get("FETCHER_STATUS_FILE")
-    if not path:
-        return
-    Path(path).write_text(json.dumps({"error": reason} | ({"code": code} if code else {})))
 
 
 def current_timestamp() -> str:
@@ -1128,7 +1123,6 @@ def main() -> int:
                 "in a .env overriding the manifest."
             )
     except RuntimeError as e:
-        logger.error("%s", e)
         report_failure(str(e), "bad_config")
         return 1
 
@@ -1184,7 +1178,6 @@ def main() -> int:
     # metadata.error. Everything below must log AFTER the "Evidence saved" line.
     if client.failures:
         reason = f"{len(client.failures)} GitLab API failures during collection"
-        logger.error("collection failed: %s", reason)
         report_failure(reason, "partial_failure")
         return 1
 
@@ -1195,7 +1188,6 @@ def main() -> int:
             f"{invalid} merge request(s) marked as significant changes did not produce a "
             f"schema-valid FedRAMP SCN: MR {', '.join('!' + str(i) for i in iids)}"
         )
-        logger.error("collection failed: %s", reason)
         report_failure(reason, "partial_failure")
         return 1
 
@@ -1217,7 +1209,6 @@ def main() -> int:
             f"{len(incomplete)} schema-valid notification(s) are incomplete under "
             f"SCN-CSO-INF — {detail}"
         )
-        logger.error("collection failed: %s", reason)
         report_failure(reason, "partial_failure")
         return 1
 

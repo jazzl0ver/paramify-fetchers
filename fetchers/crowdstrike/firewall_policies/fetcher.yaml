@@ -1,0 +1,60 @@
+name: crowdstrike_firewall_policies
+version: 0.1.0
+description: >-
+  Pulls CrowdStrike Falcon host firewall policies together with the policy
+  containers that decide whether each one is actually enforced, the attached
+  rule groups, and the individual rules — showing how inbound and outbound
+  network traffic is limited on managed endpoints.
+category: crowdstrike
+
+supports_targets: false
+
+runtime:
+  type: python
+  entry: fetcher.py
+  timeout: 900
+
+output:
+  type: json
+  path: crowdstrike_firewall_policies.json
+
+secrets:
+  - name: client_id
+    env: CROWDSTRIKE_CLIENT_ID
+  - name: client_secret
+    env: CROWDSTRIKE_CLIENT_SECRET
+
+config_schema:
+  api_base_url:
+    type: string
+    required: false
+    env: CROWDSTRIKE_API_BASE_URL
+    description: Full Falcon API base URL. Overrides cloud_region.
+  cloud_region:
+    type: string
+    required: false
+    env: CROWDSTRIKE_CLOUD_REGION
+    description: >-
+      Falcon cloud the tenant lives in — us-1, us-2, us-3, eu-1, us-gov-1,
+      us-gov-2. Defaults to us-1 (commercial).
+
+evidence_set:
+  reference_id: EVD-CS-FIREWALL-POLICIES
+  name: CrowdStrike Firewall Policies
+  instructions: >-
+    Script: fetcher.py. Authenticates at POST /oauth2/token, then pages
+    GET /policy/combined/firewall/v1 (integer-offset) for the policies and
+    resolves three GET-by-ids endpoints under /fwmgr/entities/: policies/v1
+    for the enforcement fields (enforce, test_mode, default_inbound,
+    default_outbound), rule-groups/v1 for the attached groups, and rules/v1
+    for the individual rules. Summarizes how many policies are fully
+    enforcing, and names every policy that is disabled, unassigned, not
+    enforcing, in test mode, or defaulting to permit.
+  description: >-
+    Host firewall policy and rule configuration from CrowdStrike Falcon,
+    evidencing that inbound and outbound network traffic on managed endpoints
+    is centrally restricted and that the restrictions are actually enforced.
+
+ksis:
+  - KSI-CNA-RNT
+  - KSI-CNA-MAT

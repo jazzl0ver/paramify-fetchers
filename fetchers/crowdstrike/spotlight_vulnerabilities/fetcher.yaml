@@ -1,0 +1,72 @@
+name: crowdstrike_spotlight_vulnerabilities
+version: 0.1.0
+description: >-
+  Pulls open vulnerability findings from CrowdStrike Falcon Spotlight and
+  summarizes them by severity, ExPRT rating, exploit status, remediation
+  availability, and age of the oldest unremediated finding.
+category: crowdstrike
+
+supports_targets: false
+
+runtime:
+  type: python
+  entry: fetcher.py
+  timeout: 1800
+
+output:
+  type: json
+  path: crowdstrike_spotlight_vulnerabilities.json
+
+secrets:
+  - name: client_id
+    env: CROWDSTRIKE_CLIENT_ID
+  - name: client_secret
+    env: CROWDSTRIKE_CLIENT_SECRET
+
+config_schema:
+  api_base_url:
+    type: string
+    required: false
+    env: CROWDSTRIKE_API_BASE_URL
+    description: Full Falcon API base URL. Overrides cloud_region.
+  cloud_region:
+    type: string
+    required: false
+    env: CROWDSTRIKE_CLOUD_REGION
+    description: >-
+      Falcon cloud the tenant lives in — us-1, us-2, eu-1, us-gov-1, us-gov-2.
+      Defaults to us-1 (commercial).
+  vulnerability_filter:
+    type: string
+    required: false
+    env: CROWDSTRIKE_VULN_FILTER
+    default: "status:['open','reopen']"
+    description: >-
+      FQL filter for the Spotlight query. Spotlight requires a filter; the
+      default collects currently-open findings. Widen it to include 'closed'
+      for remediation-history evidence.
+  include_raw_findings:
+    type: boolean
+    required: false
+    env: CROWDSTRIKE_VULN_INCLUDE_RAW
+    default: true
+    description: >-
+      Include every finding record in the evidence. Set false on large estates
+      to keep only the aggregate summary and the oldest-findings sample.
+
+evidence_set:
+  reference_id: EVD-CS-SPOTLIGHT-VULNS
+  name: CrowdStrike Spotlight Vulnerabilities
+  instructions: >-
+    Script: fetcher.py. Authenticates at POST /oauth2/token, then pages
+    GET /spotlight/combined/vulnerabilities/v1 with the configured FQL filter
+    and the host_info/cve/remediation facets, following the `after` cursor.
+    Summarizes findings by severity, ExPRT rating, exploit status, remediation
+    availability, and open age.
+  description: >-
+    Open vulnerability findings from CrowdStrike Falcon Spotlight, evidencing
+    that vulnerabilities are continuously detected, centrally tracked, and
+    prioritized for remediation.
+
+ksis:
+  - KSI-SVC-EIS

@@ -24,6 +24,7 @@ Fetchers are small scripts that collect compliance evidence from your infrastruc
 <a href="fetchers/datadog/"><img src="fetchers/logos/datadog.png" alt="Datadog" width="56" height="56" style="margin: 20px;"></a>
 <a href="fetchers/okta/"><img src="fetchers/logos/okta.svg" alt="Okta" width="56" height="56" style="margin: 20px;"></a>
 <a href="fetchers/sentinelone/"><img src="fetchers/logos/sentinelone.svg" alt="SentinelOne" width="56" height="56" style="margin: 20px;"></a>
+<a href="fetchers/crowdstrike/"><img src="fetchers/logos/crowdstrike.svg" alt="CrowdStrike" width="56" height="56" style="margin: 20px;"></a>
 <a href="fetchers/knowbe4/"><img src="fetchers/logos/knowbe4.svg" alt="KnowBe4" width="56" height="56" style="margin: 20px;"></a>
 <a href="fetchers/gitlab/"><img src="fetchers/logos/gitlab.svg" alt="GitLab" width="56" height="56" style="margin: 20px;"></a>
 <a href="fetchers/k8s/"><img src="fetchers/logos/kubernetes.svg" alt="Kubernetes" width="56" height="56" style="margin: 20px;"></a>
@@ -39,6 +40,7 @@ Fetchers are small scripts that collect compliance evidence from your infrastruc
 | **GCP** | 19 | Disk/bucket/Cloud SQL/BigQuery/Secret Manager encryption and CMEK use, IAM policy bindings, custom roles and service-account keys, KMS key rotation, GKE cluster hardening, Cloud Logging sinks and metric alerts, VPC/firewall/DNS segmentation, load-balancer TLS, and API keys |
 | **Datadog** | 13 | Cloud SIEM detection rules & signals, log pipelines/indexes/archives, host & container inventory, agent checks, APM services, and incidents with timelines |
 | **Okta** | 8 | Phishing-resistant MFA, authenticators, least privilege, just-in-time access, account management |
+| **CrowdStrike** | 7 | Managed host inventory, Spotlight vulnerabilities, detections, prevention policies, Zero Trust Assessment, FileVantage file integrity, and host firewall policies and rules |
 | **SentinelOne** | 5 | Agents, activities, cloud detection rules, XDR assets, user config |
 | **KnowBe4** | 4 | Security-awareness, high-risk, developer, and module-based training summaries |
 | **GitLab** | 4 | CI/CD pipeline config, merge-request and project summaries, significant change notifications |
@@ -54,7 +56,6 @@ More integrations are in progress. To request a fetcher or upvote what should be
 
 <img src="fetchers/logos/qualys.svg" alt="SSL Labs" width="56" height="56" style="margin: 20px;">
 <img src="fetchers/logos/wiz.jpeg" alt="Wiz" width="56" height="56" style="margin: 20px;">
-<img src="fetchers/logos/crowdstrike.svg" alt="CrowdStrike" width="56" height="56" style="margin: 20px;">
 <img src="fetchers/logos/servicenow.svg" alt="ServiceNow" width="56" height="56" style="margin: 20px;">
 
 GitHub · and more
@@ -540,6 +541,7 @@ To add evidence collection for a new control or a new tool, see [`docs/authoring
 | [`fetchers/okta/README.md`](fetchers/okta/README.md) | Okta API token + required admin role |
 | [`fetchers/gitlab/README.md`](fetchers/gitlab/README.md) | GitLab project access token setup |
 | [`fetchers/sentinelone/README.md`](fetchers/sentinelone/README.md) | SentinelOne service user + API token |
+| [`fetchers/crowdstrike/README.md`](fetchers/crowdstrike/README.md) | CrowdStrike Falcon API client, scopes, and cloud/GovCloud selection |
 | [`fetchers/knowbe4/README.md`](fetchers/knowbe4/README.md) | KnowBe4 Reporting API key |
 | [`fetchers/rippling/README.md`](fetchers/rippling/README.md) | Rippling Developer Hub token + scopes |
 | [`fetchers/k8s/README.md`](fetchers/k8s/README.md) | Kubernetes / EKS credential setup |

@@ -1,0 +1,67 @@
+# Offline rehearsal of the CrowdStrike fetcher set against the local test
+# double — no Falcon tenant, no credentials, no network egress.
+#
+#   python tools/crowdstrike_mock.py --port 8787
+#   export CROWDSTRIKE_CLIENT_ID=mock-id CROWDSTRIKE_CLIENT_SECRET=mock-secret
+#   paramify run examples/crowdstrike_mock_run.yaml
+#
+# api_base_url MUST be set here rather than exported. The runner passes only
+# declared secrets and config through to a fetcher and strips everything else,
+# so an exported CROWDSTRIKE_API_BASE_URL is dropped and the fetcher falls back
+# to the real commercial cloud.
+
+run:
+  output_dir: ./evidence
+  fetchers:
+    - use: crowdstrike_hosts
+      secrets:
+        client_id: ${env:CROWDSTRIKE_CLIENT_ID}
+        client_secret: ${env:CROWDSTRIKE_CLIENT_SECRET}
+      config:
+        api_base_url: http://127.0.0.1:8787
+        stale_host_days: 30
+
+    - use: crowdstrike_spotlight_vulnerabilities
+      secrets:
+        client_id: ${env:CROWDSTRIKE_CLIENT_ID}
+        client_secret: ${env:CROWDSTRIKE_CLIENT_SECRET}
+      config:
+        api_base_url: http://127.0.0.1:8787
+        vulnerability_filter: "status:['open','reopen']"
+
+    - use: crowdstrike_detections
+      secrets:
+        client_id: ${env:CROWDSTRIKE_CLIENT_ID}
+        client_secret: ${env:CROWDSTRIKE_CLIENT_SECRET}
+      config:
+        api_base_url: http://127.0.0.1:8787
+        lookback_days: 30
+
+    - use: crowdstrike_prevention_policies
+      secrets:
+        client_id: ${env:CROWDSTRIKE_CLIENT_ID}
+        client_secret: ${env:CROWDSTRIKE_CLIENT_SECRET}
+      config:
+        api_base_url: http://127.0.0.1:8787
+
+    - use: crowdstrike_zero_trust_assessment
+      secrets:
+        client_id: ${env:CROWDSTRIKE_CLIENT_ID}
+        client_secret: ${env:CROWDSTRIKE_CLIENT_SECRET}
+      config:
+        api_base_url: http://127.0.0.1:8787
+        include_host_assessments: true
+
+    - use: crowdstrike_filevantage
+      secrets:
+        client_id: ${env:CROWDSTRIKE_CLIENT_ID}
+        client_secret: ${env:CROWDSTRIKE_CLIENT_SECRET}
+      config:
+        api_base_url: http://127.0.0.1:8787
+
+    - use: crowdstrike_firewall_policies
+      secrets:
+        client_id: ${env:CROWDSTRIKE_CLIENT_ID}
+        client_secret: ${env:CROWDSTRIKE_CLIENT_SECRET}
+      config:
+        api_base_url: http://127.0.0.1:8787

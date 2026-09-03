@@ -29,6 +29,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 [ -f .env ] && { set -a; . .env; set +a; }
 
 . "$SCRIPT_DIR/../_shared/clone.sh"
+# The one place a fetcher reports WHY it failed (docs/fetcher_contract.md § Output).
+source "$(dirname "$0")/../../_lib/status.sh"
+FETCHER="$COMPONENT"   # attributes report_failure's log line to this fetcher
 
 OUTPUT_DIR="${EVIDENCE_DIR:-./evidence}"
 mkdir -p "$OUTPUT_DIR"
@@ -53,10 +56,15 @@ GIT_USER="${CHECKOV_GIT_USERNAME:-oauth2}"
 REPO_ID="${CHECKOV_REPO_ID:-evidence-fetchers-terraform}"
 
 if [ -z "$REPO_URL" ]; then
-    log_error "CHECKOV_REPO_URL is not set"
+    report_failure "CHECKOV_REPO_URL is not set" bad_config
     exit 1
 fi
-checkov_require_tools "$COMPONENT" || exit 1
+# checkov_require_tools names the missing tool(s) on stderr; report_failure gets
+# the reason into $FETCHER_STATUS_FILE too.
+checkov_require_tools "$COMPONENT" || {
+    report_failure "required tool missing from PATH (this fetcher needs git, checkov and jq)" internal_error
+    exit 1
+}
 
 # Per-repo output filename.
 _TARGET_ID="$(printf '%s' "$REPO_URL" | sed -e 's#^https\{0,1\}://##' -e 's#\.git$##' | tr -c 'A-Za-z0-9._-' '_')"
@@ -79,6 +87,9 @@ write_status_json() {
 # --- acquire source ---
 if ! checkov_clone_repo "$REPO_URL" "$BRANCH" "$TOKEN" "$GIT_USER" "$COMPONENT"; then
     write_status_json error "git clone failed" "unknown"
+    # No code: clone.sh discards git's stderr (it can carry a credentialed URL),
+    # so a bad token, a missing repo and an unreachable host are indistinguishable.
+    report_failure "git clone of $REPO_URL (branch $BRANCH, then default branch) failed - check the repo URL, the branch and GIT_CLONE_TOKEN"
     exit 1
 fi
 log_info "Cloned $REPO_URL @ ${COMMIT_SHA:0:12} (branch $BRANCH)"
@@ -157,8 +168,8 @@ fi
 # or not --soft-fail is on. checkov may emit a single object or a per-framework array.
 if ! jq -e '(if type=="array" then (.[0] // {}) else . end) | has("summary")' "$RAW" >/dev/null 2>&1; then
     ERR_HEAD="$(head -c 500 "$ERR" | tr '\n' ' ')"
-    log_error "checkov scan failed: $ERR_HEAD"
     write_status_json error "checkov scan failed: $ERR_HEAD" "$COMMIT_SHA"
+    report_failure "checkov produced no parseable result for $REPO_URL: $ERR_HEAD" internal_error
     exit 1
 fi
 jq 'if type=="array" then .[0] else . end' "$RAW" > "$NORM"

@@ -11,26 +11,18 @@ import json
 import logging
 import os
 import re
+import sys
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-# The contract's closed set of categories for $FETCHER_STATUS_FILE's optional
-# `code`. Exit codes stay binary (0 / non-zero); the category goes here.
-STATUS_CODES = frozenset(
-    {
-        "auth_failed",
-        "not_authorized",
-        "target_unreachable",
-        "rate_limited",
-        "bad_config",
-        "partial_failure",
-        "internal_error",
-    }
-)
-
-_STATUS_LOGGER = logging.getLogger("azure_common")
+# One implementation per runtime lives in fetchers/_lib; a category-shared module
+# may RE-EXPORT it and must not reimplement it (docs/fetcher_contract.md § Output).
+# Same mechanism a fetcher uses, one directory further up: this file is
+# fetchers/azure/_shared/, so fetchers/_lib is parents[2] / "_lib".
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_lib"))
+from fetcher_status import STATUS_CODES, report_failure  # noqa: E402,F401
 
 
 def current_timestamp() -> str:
@@ -193,7 +185,7 @@ def classify_failure_code(failures: List[Dict[str, str]]) -> str:
 
 
 def failure_reason(failures: List[Dict[str, str]], limit: int = 300) -> str:
-    """One-line reason for `write_status`, from the first recorded failure.
+    """One-line reason for `report_failure`, from the first recorded failure.
 
     The full set stays in the payload's `metadata.api_failures`. Truncation is marked
     so a clipped Azure error (they run to many lines) can't be read as the whole one.
@@ -210,30 +202,10 @@ def failure_reason(failures: List[Dict[str, str]], limit: int = 300) -> str:
     )
 
 
-def write_status(error: str, code: Optional[str] = None) -> None:
-    """Write the failure reason to `$FETCHER_STATUS_FILE`, if the runner set one.
-
-    The runner reads this file to fill `metadata.error`; without it the error falls
-    back to the tail of stderr, which reports the last log line (often a harmless
-    INFO) as the cause. A no-op when the env var is unset.
-    """
-    path = os.environ.get("FETCHER_STATUS_FILE")
-    if not path:
-        return
-    one_line = " ".join(str(error).split()) or "collection failed"
-    status: Dict[str, str] = {"error": one_line}
-    if code is not None:
-        if code in STATUS_CODES:
-            status["code"] = code
-        else:
-            _STATUS_LOGGER.warning("dropping unrecognized status code %r", code)
-    try:
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w") as f:
-            json.dump(status, f, sort_keys=True)
-    except OSError as exc:
-        # The status channel must never fail the run; the exit code is authoritative.
-        _STATUS_LOGGER.warning("could not write FETCHER_STATUS_FILE %s: %s", path, exc)
+# Deprecated alias: the standard name is `report_failure` (docs/fetcher_contract.md
+# § Output). Kept only so the azure fetchers that import `write_status` keep working
+# until they are moved over; new code must import `report_failure`.
+write_status = report_failure
 
 
 # --------------------------------------------------------------------------- #

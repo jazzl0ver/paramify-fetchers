@@ -1,0 +1,62 @@
+name: crowdstrike_hosts
+version: 0.1.0
+description: >-
+  Pulls the CrowdStrike Falcon managed host inventory (one record per endpoint
+  with the sensor installed) and summarizes platform, OS, sensor version,
+  reduced-functionality mode, and last-seen staleness.
+category: crowdstrike
+
+supports_targets: false
+
+runtime:
+  type: python
+  entry: fetcher.py
+  timeout: 900
+
+output:
+  type: json
+  path: crowdstrike_hosts.json
+
+secrets:
+  - name: client_id
+    env: CROWDSTRIKE_CLIENT_ID
+  - name: client_secret
+    env: CROWDSTRIKE_CLIENT_SECRET
+
+config_schema:
+  api_base_url:
+    type: string
+    required: false
+    env: CROWDSTRIKE_API_BASE_URL
+    description: >-
+      Full Falcon API base URL. Overrides cloud_region. Set this for GovCloud or
+      to point the fetcher at a test double.
+  cloud_region:
+    type: string
+    required: false
+    env: CROWDSTRIKE_CLOUD_REGION
+    description: >-
+      Falcon cloud the tenant lives in — us-1, us-2, eu-1, us-gov-1, us-gov-2.
+      Defaults to us-1 (commercial). FedRAMP tenants are typically us-gov-1.
+  stale_host_days:
+    type: integer
+    required: false
+    env: CROWDSTRIKE_STALE_HOST_DAYS
+    default: 30
+    description: Days without check-in before a host counts as stale in the summary.
+
+evidence_set:
+  reference_id: EVD-CS-HOSTS
+  name: CrowdStrike Falcon Managed Hosts
+  instructions: >-
+    Script: fetcher.py. Authenticates at POST /oauth2/token, enumerates host IDs
+    via GET /devices/queries/devices-scroll/v1 (offset-token pagination), and
+    resolves them in batches of 100 via POST /devices/entities/devices/v2.
+    Summarizes platform, product type, OS build, sensor version, reduced
+    functionality mode, and hosts not seen within the staleness window.
+  description: >-
+    Managed endpoint inventory from CrowdStrike Falcon, evidencing that assets
+    are tracked and carry a current, fully-functional endpoint security agent.
+
+ksis:
+  - KSI-PIY-GIV

@@ -207,9 +207,12 @@ return 0
 Non-zero is only half of it — you also have to say **why**. `report_failure`
 writes the reason to `$FETCHER_STATUS_FILE`, which the runner masks for secrets
 and puts in the envelope's `metadata.error`, the field Paramify shows to whoever
-is triaging. It's four lines of stdlib (no framework import) — see
+is triaging. Import it from `fetchers/_lib/` — Python
+`from fetcher_status import report_failure`, bash
+`source "$(dirname "$0")/../../_lib/status.sh"`. Don't hand-roll your own; see
 [`porting_playbook.md`](porting_playbook.md) § "Say why you failed" for the
-Python and bash versions.
+import lines, and [`fetcher_contract.md`](fetcher_contract.md) § Output for the
+rule about where error data is allowed to go.
 
 Two things to get right:
 
@@ -217,9 +220,13 @@ Two things to get right:
   status file, the runner falls back to the *tail* of your stderr — so an INFO
   line logged last becomes the reported failure reason. That was issue #24: runs
   that failed reported "Evidence saved to …" as their error.
-- **Don't rely on the payload.** Recording failure state in your evidence is
-  useful for anyone reading the file, but the runner never looks inside the
-  payload, so it can't reach `metadata.error` from there.
+- **Don't rely on the payload — but do fill it in.** The runner never looks
+  inside the payload, so failure state there can't reach `metadata.error`. It is
+  still what a human or a validator reading the evidence file sees, so when calls
+  failed and you still wrote evidence, record it as `metadata.partial_failure`
+  (bool) plus `metadata.api_failures[]` of `{operation, type, message}`. That
+  exact shape, not a per-section `"status"` string or an `errors` list — see
+  [`fetcher_contract.md`](fetcher_contract.md) § Output.
 
 Catch transient errors at the API-call boundary, track them, exit non-zero if non-empty.
 

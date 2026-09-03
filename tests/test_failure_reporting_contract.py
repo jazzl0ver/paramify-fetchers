@@ -37,23 +37,34 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FETCHERS = REPO_ROOT / "fetchers"
 
-# Calls that count as "told someone why this failed": an error-level log, a
-# write to $FETCHER_STATUS_FILE via the documented helper, or a direct write to
-# stderr. INFO/WARN deliberately do not count — the tail heuristic can't tell
-# them apart from a success message, which is the whole bug.
-_PY_REPORT_ATTRS = ("error", "exception", "critical")
-_PY_REPORT_NAMES = ("report_failure", "die", "fail")
-_SH_REPORT = re.compile(r">&2|log_error|report_failure|FETCHER_STATUS_FILE")
+# Calls that count as "told someone why this failed": ONLY a report through
+# $FETCHER_STATUS_FILE, via the shared `report_failure` helper in fetchers/_lib/.
+#
+# This used to also credit an error-level log or any write to stderr
+# (`logger.error`, `log_error`, `>&2`). That was the loophole: all 80 AWS
+# fetchers logged a bare "Encountered 3 API failures during collection" to
+# stderr and passed this test for months while reporting no cause at all. An
+# operator saw the count and nothing else. Logging is necessary but not
+# sufficient — the runner's stderr-tail fallback is a heuristic, and the
+# envelope's metadata.error is the field Paramify actually shows.
+#
+# `write_status` is the deprecated alias azure_common and gcp_common still
+# expose; 46 azure and gcp call sites use it. It is accepted here so this scan
+# could be tightened without renaming those in the same change. Remove it from
+# this tuple in the pass that renames them — see docs/fetcher_contract.md
+# § Output, which names `report_failure` as the one name.
+_PY_REPORT_NAMES = ("report_failure", "write_status")
+_SH_REPORT = re.compile(r"report_failure|FETCHER_STATUS_FILE")
 
 # Justified exceptions. Keep this list SHORT and cite the line that does the
 # reporting — a growing allowlist means the rule isn't working.
-_ALLOWED = {
-    # checkov_clone_repo logs the failure itself before returning non-zero
-    # (fetchers/checkov/_shared/clone.sh:52), so the caller's bare `exit 1` is
-    # already covered. The scanner can't see across files.
-    ("checkov/kubernetes/fetcher.sh", 77),
-    ("checkov/terraform/fetcher.sh", 82),
-}
+# Empty, and worth keeping that way. It previously exempted the two checkov
+# fetchers' clone-failure `exit 1`, on the grounds that clone.sh logged the
+# reason itself and the scanner cannot see across files. Both now call
+# `report_failure` directly, so the exemptions are gone rather than merely
+# re-pointed — and the entries had already gone stale, since those exits moved
+# to different line numbers.
+_ALLOWED: set[tuple[str, int]] = set()
 
 
 # --------------------------------------------------------------------------- #
@@ -61,14 +72,12 @@ _ALLOWED = {
 # --------------------------------------------------------------------------- #
 
 def _is_report_call(call: ast.Call) -> bool:
+    """A bare call to the shared helper. Attribute calls (`logger.error(...)`)
+    and `print(..., file=sys.stderr)` deliberately do NOT count — see the note
+    on _PY_REPORT_NAMES for why crediting them made this scan pass 80 fetchers
+    that reported nothing."""
     f = call.func
-    if isinstance(f, ast.Attribute) and f.attr in _PY_REPORT_ATTRS:
-        return True
-    if isinstance(f, ast.Name) and f.id in _PY_REPORT_NAMES:
-        return True
-    if isinstance(f, ast.Name) and f.id == "print":
-        return any(kw.arg == "file" and "stderr" in ast.dump(kw.value) for kw in call.keywords)
-    return False
+    return isinstance(f, ast.Name) and f.id in _PY_REPORT_NAMES
 
 
 def _py_reports(stmt: ast.AST) -> bool:
@@ -189,7 +198,27 @@ if __name__ == "__main__":
     sys.exit(main())
 '''
 
+# A log alone is NOT the fix any more — that is what _THE_HALF_FIX below is for.
 _THE_FIX = '''\
+import logging, sys
+logger = logging.getLogger("x")
+
+def main() -> int:
+    result = collect()
+    logger.info("Evidence saved to %s", "out.json")
+    if result.get("status") != "success":
+        report_failure(result["message"], "partial_failure")
+        return 1
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+# The shape that used to satisfy this scan: it tells a human on stderr but hands
+# the runner nothing, so metadata.error still falls back to the stderr tail --
+# here the "Evidence saved" INFO line. 80 AWS fetchers sat in exactly this state.
+_THE_HALF_FIX = '''\
 import logging, sys
 logger = logging.getLogger("x")
 
@@ -215,6 +244,18 @@ def test_the_checker_accepts_the_fix():
     assert silent_python_exits(_THE_FIX) == []
 
 
+def test_a_log_alone_is_not_a_report():
+    """The loophole this scan used to have, pinned shut.
+
+    Logging the reason is necessary but not sufficient: the runner reads
+    $FETCHER_STATUS_FILE, and only falls back to the stderr *tail* when nothing
+    wrote one. If a mere `logger.error` satisfies this checker again, every
+    category can drift back to reporting a bare count.
+    """
+    assert silent_python_exits(_THE_HALF_FIX), \
+        "a stderr log with no status-file report must NOT count as reporting why"
+
+
 def test_checker_ignores_helper_return_values():
     """`return True` / `return "aws"` in a helper is an answer, not an exit code."""
     src = 'import sys\ndef looks_like_aws(h):\n    return True\ndef main():\n    return 0\n'
@@ -227,7 +268,19 @@ def test_checker_catches_bare_sys_exit_too():
 
 def test_bash_checker_detects_and_accepts():
     assert silent_bash_exits('if [ -z "$TOKEN" ]; then\n    exit 1\nfi\n')
-    assert silent_bash_exits('if [ -z "$TOKEN" ]; then\n    log_error "no token"\n    exit 1\nfi\n') == []
+    assert silent_bash_exits(
+        'if [ -z "$TOKEN" ]; then\n    report_failure "no token" bad_config\n    exit 1\nfi\n'
+    ) == []
+
+
+def test_bash_log_error_alone_is_not_a_report():
+    """Same loophole, bash side: `log_error` reaches a human tailing the run,
+    not the runner. This is the exact shape all 80 AWS fetchers had."""
+    assert silent_bash_exits(
+        'if [ "$failures" -gt 0 ]; then\n'
+        '    log_error "Encountered $failures API failures during collection"\n'
+        '    exit 1\nfi\n'
+    ), "log_error with no status-file report must NOT count as reporting why"
 
 
 def test_bash_checker_ignores_exit_mentioned_in_a_comment():
@@ -337,9 +390,21 @@ def test_real_fetcher_failure_reports_the_real_cause(tmp_path):
 
 
 def test_allowlist_entries_still_exist():
-    """A stale allowlist entry hides a real regression at that path."""
+    """A stale allowlist entry hides a real regression at that path.
+
+    Checking only that the line number is *within* the file was too weak: both
+    original entries had drifted onto unrelated lines and this still passed. An
+    entry has to point at an actual non-zero exit to be exempting anything.
+    """
     for rel, line in _ALLOWED:
         path = FETCHERS / rel
         assert path.exists(), f"allowlisted {rel} no longer exists — drop the entry"
-        assert line <= len(path.read_text().splitlines()), \
+        lines = path.read_text().splitlines()
+        assert line <= len(lines), \
             f"allowlisted {rel}:{line} is past end of file — the code moved, re-verify it"
+        target = re.sub(r"(^|\s)#.*$", "", lines[line - 1])
+        pattern = r"\bexit\s+[1-9]" if path.suffix == ".sh" else r"return\s+[1-9]|sys\.exit\(\s*[1-9]"
+        assert re.search(pattern, target), (
+            f"allowlisted {rel}:{line} is not a non-zero exit any more — it reads "
+            f"{target.strip()!r}. The code moved; re-verify and re-point or drop the entry."
+        )

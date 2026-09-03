@@ -324,7 +324,7 @@ paramify-fetchers/
 │       ├── run_manifest_schema.json
 │       └── envelope_schema.json
 │
-├── fetchers/                         # 172 fetchers across 13 categories
+├── fetchers/                         # 179 fetchers across 14 categories
 │   ├── _categories/                  # platform-wide config + auth per category
 │   │   ├── okta.yaml
 │   │   ├── aws.yaml
@@ -336,6 +336,7 @@ paramify-fetchers/
 │   ├── gcp/                          # 19 Python, official clients (ADC; fanout per project)
 │   ├── datadog/                      # 13 Python (SIEM, logs, infra, APM, incidents)
 │   ├── okta/                         # 8 (7 Python KSI wrappers + 1 bash); _shared/okta_iam_core.py
+│   ├── crowdstrike/                  # 7 single-target Python, hand-rolled Falcon client; _shared/falcon_client.py
 │   ├── sentinelone/                  # 5 single-target Python
 │   ├── knowbe4/                      # 4 bash
 │   ├── gitlab/                       # 4 fanout-capable Python (e.g. ci_cd_pipeline_config)
@@ -420,9 +421,9 @@ The current approach parses JSON output with regex to determine pass/fail. Most 
 ## Current state of the work
 
 **This section is the kept-current account of what's ported and what's in
-progress.** Snapshot: 172 fetchers across 13 categories (aws, azure, gcp,
-datadog, okta, sentinelone, knowbe4, gitlab, k8s, rippling, paramify, checkov,
-demo); the AWS port is complete (80/80). The pieces that make this run:
+progress.** Snapshot: 179 fetchers across 14 categories (aws, azure, gcp,
+datadog, okta, crowdstrike, sentinelone, knowbe4, gitlab, k8s, rippling,
+paramify, checkov, demo); the AWS port is complete (80/80). The pieces that make this run:
 
 - **Facade + three front-ends** (`framework/api.py`) — all discovery, manifest editing, validate, and run go through one facade; the human CLI, the `--json` AI CLI, and the Textual TUI (`paramify tui`) all call only the facade
 - **Fetcher schema** (`framework/schemas/fetcher_schema.json`) — supports fanout: `supports_targets`, `target_schema`, `per_target` secrets, `output.aggregation`. Extended additively from the original minimal version.

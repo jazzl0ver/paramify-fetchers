@@ -368,7 +368,11 @@ or data-collection style — there's no one-size-fits-all check:
 - **Bash wrappers (`okta_authenticators`)** record each failed `curl` to a
   temp file (because `… | while read` loops run in subshells and can't
   mutate parent counters); at the end, `wc -l` the file and `exit 1` if
-  non-zero.
+  non-zero. **Copy the detection, not the reporting.** In every bash fetcher
+  in the tree, `wc -l` is the *only* reader of that temp file — the recorded
+  causes are counted and then dropped by the EXIT trap, and the operator gets
+  a bare count. Keep the temp-file ledger; add `report_failure` before the
+  `exit 1`, as § "Say why you failed" shows.
 - **SentinelOne wrappers** track `api_failures` in a list local to the data-
   collection function, surface it in the result dict (so customers see
   failures in the JSON output), and check `result["api_failures"]` in
@@ -393,16 +397,18 @@ reason an operator reads in Paramify. Two things on the failure path: log it (so
 it shows up live) and write it to `$FETCHER_STATUS_FILE` (so the envelope gets
 it verbatim). Log it *after* any "saved" line — the fallback takes the tail.
 
-Python — no framework import needed, this is stdlib:
+**Import the helper — do not paste your own.** An earlier revision of this page
+printed the nine-line stdlib version here and told you it needed no framework
+import. That advice produced 26 private copies under three different names, and
+`report_failure` vs `write_status` vs an inline `os.environ.get(...)` is now the
+single biggest inconsistency in the fetcher tree. One implementation per runtime:
+
+Python:
 
 ```python
-def report_failure(msg: str, code: str | None = None) -> None:
-    """Tell the runner why this run failed. See docs/fetcher_contract.md."""
-    path = os.environ.get("FETCHER_STATUS_FILE")
-    if not path:
-        return
-    body = {"error": msg} | ({"code": code} if code else {})
-    Path(path).write_text(json.dumps(body))
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR.parents[1] / "_lib"))
+from fetcher_status import report_failure  # noqa: E402
 
 ...
 
@@ -413,15 +419,10 @@ if result.get("status") != "success":
 return 0
 ```
 
-Bash — next to the `log_error` helper the category scripts already define:
+Bash:
 
 ```bash
-report_failure() {  # $1 = reason, $2 = optional code
-    log_error "$1"
-    [ -n "${FETCHER_STATUS_FILE:-}" ] && \
-        jq -n --arg e "$1" --arg c "${2:-}" \
-           '{error:$e} + (if $c == "" then {} else {code:$c} end)' > "$FETCHER_STATUS_FILE"
-}
+source "$(dirname "$0")/../../_lib/status.sh"
 
 if [ "$failure_count" -gt 0 ]; then
     report_failure "$failure_count API failures during collection" partial_failure
@@ -429,8 +430,15 @@ if [ "$failure_count" -gt 0 ]; then
 fi
 ```
 
-Codes in use: `auth_failed`, `not_authorized`, `target_unreachable`,
-`rate_limited`, `bad_config`, `partial_failure`, `internal_error`.
+`report_failure` logs to stderr *and* writes `$FETCHER_STATUS_FILE`, so it is the
+whole failure path — you do not also need a `log_error`. It is a no-op when the
+runner set no status file, and it never fails the run: the exit code stays
+authoritative.
+
+Codes: `auth_failed`, `not_authorized`, `target_unreachable`, `rate_limited`,
+`bad_config`, `partial_failure`, `internal_error`. Prefer one of these over a new
+exit code — see [`fetcher_contract.md`](fetcher_contract.md) § Output for the full
+rule, including where failure data goes *inside* your payload.
 
 ## Known interim violations
 

@@ -1,0 +1,70 @@
+name: crowdstrike_zero_trust_assessment
+version: 0.1.0
+description: >-
+  Pulls the CrowdStrike Zero Trust Assessment audit report for the tenant —
+  per-CID sensor and OS posture scores showing how far managed endpoints meet
+  CrowdStrike's security-configuration baseline.
+category: crowdstrike
+
+supports_targets: false
+
+runtime:
+  type: python
+  entry: fetcher.py
+  timeout: 900
+
+output:
+  type: json
+  path: crowdstrike_zero_trust_assessment.json
+
+secrets:
+  - name: client_id
+    env: CROWDSTRIKE_CLIENT_ID
+  - name: client_secret
+    env: CROWDSTRIKE_CLIENT_SECRET
+
+config_schema:
+  api_base_url:
+    type: string
+    required: false
+    env: CROWDSTRIKE_API_BASE_URL
+    description: Full Falcon API base URL. Overrides cloud_region.
+  cloud_region:
+    type: string
+    required: false
+    env: CROWDSTRIKE_CLOUD_REGION
+    description: >-
+      Falcon cloud the tenant lives in — us-1, us-2, eu-1, us-gov-1, us-gov-2.
+      Defaults to us-1 (commercial).
+  include_host_assessments:
+    type: boolean
+    required: false
+    env: CROWDSTRIKE_ZTA_INCLUDE_HOSTS
+    default: false
+    description: >-
+      Also collect per-host assessment scores via the score-range query. Off by
+      default — the audit report alone is the account-wide evidence, and the
+      per-host query multiplies runtime on large estates.
+  host_assessment_filter:
+    type: string
+    required: false
+    env: CROWDSTRIKE_ZTA_HOST_FILTER
+    default: "score:>=0"
+    description: FQL score filter used when include_host_assessments is on.
+
+evidence_set:
+  reference_id: EVD-CS-ZERO-TRUST-ASSESSMENT
+  name: CrowdStrike Zero Trust Assessment
+  instructions: >-
+    Script: fetcher.py. Authenticates at POST /oauth2/token and reads
+    GET /zero-trust-assessment/entities/audit/v1 for the tenant-wide ZTA audit
+    report. When include_host_assessments is enabled, also pages
+    GET /zero-trust-assessment/queries/assessments/v1 with the configured score
+    filter for per-host scores.
+  description: >-
+    Zero Trust Assessment posture scores from CrowdStrike Falcon, evidencing
+    that endpoint security configuration is continuously measured against a
+    hardening baseline.
+
+ksis:
+  - KSI-CNA-IBP

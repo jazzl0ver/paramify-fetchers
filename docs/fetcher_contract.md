@@ -101,7 +101,16 @@ The runner does NOT pass the customer's full environment through. If your fetche
   - non-zero = collection encountered failures (at least one API call, target, or precondition failed)
   - `124` = reserved: the runner killed the invocation for exceeding its timeout (don't return this yourself)
 
-Detection of "did collection fail" is fetcher-defined — see [`porting_playbook.md`](porting_playbook.md) § "Exit code convention" for the patterns currently in use.
+**Detecting** that collection failed is fetcher-defined — it depends on the shared
+module and the collection style, and [`porting_playbook.md`](porting_playbook.md)
+§ "Exit code convention" lists the patterns in use. **Reporting** it is not
+fetcher-defined. Error data goes in exactly these three places and nowhere else:
+
+| Where | Who reads it | Required |
+|---|---|---|
+| Exit code | the runner — the *only* failure signal | always |
+| `$FETCHER_STATUS_FILE` → `{error, code}` | the runner → envelope `metadata.error` / `metadata.error_code` → Paramify | on every non-zero exit |
+| `metadata.partial_failure` + `metadata.api_failures[]` in your payload | a human or a validator reading the evidence file | when calls failed but you still produced evidence |
 
 - **Failure reason:** when you exit non-zero, write why to `$FETCHER_STATUS_FILE`:
 
@@ -131,13 +140,52 @@ Detection of "did collection fail" is fetcher-defined — see [`porting_playbook
   A malformed, empty, or absent file is never itself an error; the runner falls
   back and the run is unaffected.
 
-- **The runner never reads inside your `payload`.** Recording failure state there
-  is fine and often useful as evidence content — a reader of the file should be
-  able to see the collection was incomplete — but it is not a signal the
-  framework acts on, so your payload can be any shape the source data wants.
-  **Exit code is the only failure signal**, and `metadata.status` derives from it
-  alone. Consulting your own payload to decide what to return is an
-  implementation detail, not a second channel.
+  **Call the shared helper; do not write this block yourself.** The write is nine
+  lines of stdlib — which is exactly why it got copy-pasted 27 times under two
+  names (`report_failure` 25 times, `write_status` twice), while seven whole
+  categories never copied it and so reported nothing at all. One name, one
+  implementation per runtime:
+
+  - **Python** — `sys.path.insert(0, str(SCRIPT_DIR.parents[1] / "_lib"))`, then
+    `from fetcher_status import report_failure`. Same mechanism as a category
+    `_shared` module, one directory up.
+  - **Bash** — `source "$(dirname "$0")/../../_lib/status.sh"`, then
+    `report_failure "<reason>" [code]`.
+
+  The name is `report_failure`. `write_status` (the deprecated alias in
+  `azure_common` and `gcp_common`) and a hand-rolled
+  `os.environ.get("FETCHER_STATUS_FILE")` write are prior art, not alternatives.
+  A category-shared module may re-export it; it must not reimplement it.
+
+- **The runner never reads inside your `payload`.** **Exit code is the only failure
+  signal**, and `metadata.status` derives from it alone. Consulting your own payload
+  to decide what to return is an implementation detail, not a second channel.
+
+  But a reader of the evidence file must be able to see the collection was
+  incomplete without opening the envelope. So when calls failed and you still wrote
+  evidence, record them in your payload's own `metadata` block, in this shape:
+
+  ```json
+  "metadata": {
+    "partial_failure": true,
+    "api_failures": [
+      { "operation": "guardduty list-detectors",
+        "type": "AccessDenied",
+        "message": "not authorized to perform guardduty:ListDetectors" }
+    ]
+  }
+  ```
+
+  `partial_failure` is a bool. Each `api_failures[]` entry carries `operation`,
+  `type`, and `message`. Both are explicit so a **validator** can assert on them —
+  the envelope's `metadata` belongs to the runner, this one belongs to you, and
+  only yours is in scope when a validator reads the file.
+
+  This is a SHOULD: the framework acts on none of it, and payload shape otherwise
+  follows the source data. But it is the *only* shape to use for this. Per-section
+  `"status": "partial_or_empty"` strings, `errors`, `collection_errors`, and
+  `results.config_resolution` are all prior art in the tree; none of them is the
+  standard, and new fetchers must not add to that list.
 
 ### Behavior
 
@@ -213,6 +261,25 @@ These are accepted violations during the porting period. Each is tracked, scoped
 - **Structured exit codes** are not categorized — only `0` vs. non-zero. The failure *category* lives in the `code` field of `$FETCHER_STATUS_FILE` instead, so the exit-code space stays uncarved.
 
 - **`$FETCHER_STATUS_FILE` is only read on a non-zero exit.** A fetcher may write it and still exit 0 (collected fine, one optional call degraded); the runner keeps that report on the invocation but does not surface it, since a successful envelope carrying an `error` would be its own kind of misleading. Giving that case a home — the "succeeded but could not measure X" signal that currently reaches nobody, per the KnowBe4 config-resolution work — is the next step for this channel.
+- **`_run_metadata.json` carries no failure reason.** `_invocation_record`
+  (`framework/api.py`) writes each invocation's `stderr_tail` but not the
+  `error`/`error_code` the runner already read from `$FETCHER_STATUS_FILE`. The
+  classification reaches every evidence envelope but not the run index, so
+  "what failed in this run, and why" still means opening each file. Additive fix.
+- **`aws` classifies from stderr text, not from a typed error code.** Resolved in
+  0.5.1: `aws` in `aws/_shared/aws.sh` is a shell function shadowing the CLI, so
+  all 250 `2>/dev/null` call sites keep their exact text and still have their
+  stderr captured, and `aws_classify_code` maps it onto the closed set. The
+  matching is regex over botocore's English wording, which is the only signal a
+  CLI-based fetcher has — the SDK-based categories read a typed exception
+  instead. So a future AWS CLI rewording can silently downgrade a classification
+  to `partial_failure`, which is the safe direction but is still a downgrade.
+  `tests/test_aws_failure_classification.py` pins the current wordings verbatim.
+- **The payload failure ledger is not emitted by the bash families.**
+  `metadata.partial_failure` + `metadata.api_failures[]` (§ Output) is a SHOULD,
+  and `azure`/`gcp` emit it; the 80 `aws` payloads carry neither. Adding keys to
+  80 payloads can move what a live validator matches on, so it belongs in its own
+  change rather than alongside the status-channel backfill.
 - **`output.path` semantics** for per-target fanout (relative filename vs. base name vs. template) aren't pinned by the schema. v0.x convention: the fetcher derives its own per-target filename from the target identifier.
 
 ---
@@ -221,6 +288,27 @@ These are accepted violations during the porting period. Each is tracked, scoped
 
 When in doubt, mirror the shape of one of these:
 
-- **Single-target Python:** [`fetchers/okta/phishing_resistant_mfa/`](../fetchers/okta/phishing_resistant_mfa/)
-- **Single-target bash:** [`fetchers/okta/authenticators/`](../fetchers/okta/authenticators/)
 - **Fanout Python:** [`fetchers/gitlab/ci_cd_pipeline_config/`](../fetchers/gitlab/ci_cd_pipeline_config/)
+  — reports via `report_failure`, including a `bad_config` code on a config fault.
+- **Payload failure ledger:** [`fetchers/azure/_shared/azure_common.py`](../fetchers/azure/_shared/azure_common.py)
+  `build_payload` — the canonical `metadata.partial_failure` + `metadata.api_failures`
+  shape, plus `classify_failure_code` for picking the `code`. It still spells the
+  status write `write_status`; that is the rename the clause above calls for.
+- **Single-target bash:** [`fetchers/aws/guard_duty_findings/`](../fetchers/aws/guard_duty_findings/)
+  — sources `aws/_shared/aws.sh`, accumulates each failed call into
+  `$_FAILURE_LOG`, and ends with `aws_report_failures "$failure_count"
+  "$_reasons"`, which adds the captured AWS error text and a classified `code`.
+  Mirror that: a bash fetcher should never type a `code` literal, because a
+  literal is how all 80 of these came to report `partial_failure` for every
+  failure regardless of cause.
+- **Not-enabled vs. failed:** the same fetcher, and
+  [`fetchers/aws/macie_data_discovery/`](../fetchers/aws/macie_data_discovery/)
+  — `aws_service_unavailable` is checked **before** anything is written to the
+  failure log, so a service that is simply not in use records its status and
+  exits 0 instead of reporting a failure.
+
+Two fetchers were cited here until this revision — `okta/phishing_resistant_mfa`
+(single-target Python) and `okta/authenticators` (single-target bash). Neither
+writes `$FETCHER_STATUS_FILE`. "When in doubt, mirror one of these" is how the
+bash `_FAILURE_LOG`-plus-`wc -l` pattern reached 80 AWS fetchers, so a reference
+that violates the contract is worse than no reference.

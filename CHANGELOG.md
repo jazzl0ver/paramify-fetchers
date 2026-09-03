@@ -10,7 +10,132 @@ schemas and the `paramify` CLI — not the internal code.
 
 ## [Unreleased]
 
+## [0.5.1-beta] - 2026-09-02
+
+### Fixed
+
+- **An AWS failure now says *why*, not just which call broke.** 0.5.0-beta got
+  all 80 AWS fetchers reporting through `$FETCHER_STATUS_FILE`, but 250 of their
+  CLI calls ran as `aws ... 2>/dev/null` and the matching log line recorded only
+  a label. Of 310 failure records, 8 carried the AWS error text and **302 carried
+  none** — so expired credentials, a missing IAM permission and throttling all
+  arrived looking identical, while being three unrelated fixes. All 80 also
+  passed a hardcoded `partial_failure`, so `metadata.error_code` carried no
+  information for the largest category in the repo.
+
+  Both are fixed. `metadata.error` now carries the AWS error text behind the
+  calls that failed, and `metadata.error_code` is derived from it:
+
+  ```json
+  {
+    "error": "2 AWS API failure(s); first: aws sts get-caller-identity failed; aws ec2 describe-security-groups (list) failed (exit=254) -- aws: [ERROR]: An error occurred (InvalidClientTokenId) ... The security token included in the request is invalid. | aws: [ERROR]: An error occurred (AuthFailure) ... AWS was not able to validate the provided access credentials",
+    "code": "auth_failed"
+  }
+  ```
+
+  That `code` is what the not-enabled classification work and the
+  deleted-mid-scan decision were both waiting on.
+
+  **No call site was rewritten.** `aws` in
+  [`fetchers/aws/_shared/aws.sh`](fetchers/aws/_shared/aws.sh) is now a shell
+  function shadowing the CLI, so all 250 calls keep their exact text — including
+  `2>/dev/null` — and still have their stderr captured. stdout, stderr and the
+  exit code reach the caller unchanged, so the `2>"$_ERR"` + `grep` pattern the
+  not-enabled check depends on still works, synchronously. The one constraint
+  this adds: a fetcher must reach the CLI as plain `aws`, never `command aws` or
+  an absolute path, or its calls go unclassified. A test enforces that.
+
+  Classification is regex over botocore's wording, which is the only signal a
+  CLI-based fetcher has — the SDK-based categories read a typed exception
+  instead. A future AWS rewording can therefore downgrade a code to
+  `partial_failure`; that is the safe direction, and
+  `tests/test_aws_failure_classification.py` pins the current wordings verbatim.
+
+- **A not-enabled service still exits 0.** The wrapper captures the
+  `SubscriptionRequiredException` stderr like any other, so this was the
+  regression risk worth naming: had it been recorded as a failure, every account
+  without Macie, Inspector, or Shield would have started reporting a spurious
+  `partial_failure`. `aws_service_unavailable` is still checked first and
+  short-circuits, verified end-to-end and pinned by a test.
+
+- **Failure reasons read correctly again.** The separator was built with
+  `tr '\n' '; '`, and `tr` maps one character to one character — so it emitted
+  `;` with no space and left a trailing one before the `(+N more)` suffix.
+
+### Changed
+
+- **Two Azure SDK pins widened**, and CI can now tell whether that is safe.
+  `azure-mgmt-network` moves from `<32` to `<33` and
+  `azure-mgmt-recoveryservicesbackup` from `<11` to `<12`, in both
+  `pyproject.toml` and `requirements.txt`. Anyone installing `.[azure]` gets the
+  new majors.
+
+  The reason this is worth an entry: **CI installed `.[dev]` and `.[dev,tui]` but
+  never `.[azure]`, so no test in the suite had ever imported an Azure SDK.**
+  Every `azure-mgmt` major that has broken this category broke it silently —
+  wrong or empty evidence rather than an exception — which meant a dependency PR
+  widening an Azure pin went green on evidence that proved nothing about Azure.
+  One did
+  exactly that: it relaxed the load-bearing `azure-mgmt-monitor<7` and passed all
+  twelve checks, while 7.0.0 removes the `diagnostic_settings` operation group
+  that three fetchers read.
+
+  A new `azure-sdk (surface)` job is now the only one that installs the Azure
+  extra, and it pins the surface in the shapes a major bump actually takes it
+  away: relocated client imports, vanished operation groups, vanished methods,
+  and the model-field renames that produce wrong rather than empty evidence — 56
+  checks across all 27 Azure fetchers. It asserts the extra really resolved
+  before running, because the module opens with `pytest.importorskip` and a
+  failed install would otherwise skip and report green. `azure-mgmt-monitor`
+  majors are held back until the operation group returns; a test fails when it
+  does, so the pin and the hold get lifted together instead of going stale.
+
+- **The container base image moves to Python 3.14** (`deploy/Dockerfile`:
+  `python:3.12-slim` → `python:3.14-slim`), and **CI now tests on 3.14** as well
+  as 3.10–3.13. The interpreter the Dockerfile and the dev environments actually
+  run was previously the one nothing gated.
+
+- **Corrected the 0.5.0-beta entry below.** It said `metadata.error` "now carries
+  the actual cause", and illustrated it with a report rich in AWS error text.
+  That example came from one of the 8 call sites that captured stderr, out of
+  310 — it was not representative, and for AWS the accurate claim at 0.5.0-beta
+  was that the report *names the call that failed*. The entry now says so, and
+  this release is what makes the original claim true.
+
+## [0.5.0-beta] - 2026-09-02
+
 ### Added
+
+- **CrowdStrike Falcon fetcher set** — seven fetchers and a fourteenth
+  category, contributed by [@StewartClaw](https://github.com/StewartClaw):
+  managed host inventory, Spotlight vulnerabilities, detections, prevention
+  policies, Zero Trust Assessment, FileVantage file integrity, and host firewall
+  policies and rules. All seven share one OAuth2 client
+  ([`_shared/falcon_client.py`](fetchers/crowdstrike/_shared/falcon_client.py))
+  that handles token refresh, cursor and offset pagination, and the
+  `Retry-After` contract on 429s. **Commercial and GovCloud both supported** —
+  `cloud_region` selects a commercial region or `us-gov-1` / `us-gov-2`, and the
+  client follows the region-discovery redirect Falcon's auth endpoint issues
+  when the host is wrong.
+
+  Built without a Falcon tenant, so correctness is pinned to CrowdStrike's
+  published API models rather than to hand-written fixtures:
+  `tools/crowdstrike_schema.py` derives the request/response shapes,
+  `tools/crowdstrike_schema_check.py` fails
+  when a fetcher reads a field the published model does not define,
+  `tools/crowdstrike_usage_check.py` fails when a declared API scope isn't
+  exercised (and the reverse), and `examples/crowdstrike_mock_run.yaml` runs the
+  whole set against a schema-derived local double — no tenant, no credentials, no
+  network egress. That covers the documented contract, not a live tenant's
+  responses; **prevention policies and Zero Trust Assessment are the two worth
+  re-checking against a real tenant**, as no public response samples exist for
+  either.
+
+- **[`docs/ksi_mapping.md`](docs/ksi_mapping.md)** — the full fetcher ↔ KSI
+  mapping, readable in both directions, with FedRAMP's verbatim statements and
+  NIST control crosswalk, and the open gaps called out as fetcher backlog.
+  Generated by `tools/gen_ksi_mapping.py`; the generator is idempotent, so CI can
+  fail on a diff to keep it honest.
 
 - **Issue-report fetchers (`kind: issue_report`).** A second collection kind for
   the file a scanner already produces — a Nessus export, a Wiz findings CSV —
@@ -27,6 +152,61 @@ schemas and the `paramify` CLI — not the internal code.
   ([API documentation](https://app.paramify.com/api/documentation/)).
 
 ### Changed
+
+- **A failed fetcher now tells you *why*, in every category.** Paramify used to
+  show whoever was triaging `Encountered 3 API failures during collection` — a
+  count, with no hint of which call broke. Two causes, one root: **103 fetchers
+  across seven categories** (`aws` 80, `okta` 8, `knowbe4` 4, `k8s` 3,
+  `paramify` 3, `rippling` 3, `checkov` 2) never wrote `$FETCHER_STATUS_FILE`,
+  so the runner fell back to the tail of stderr and `metadata.error` carried
+  whatever the fetcher happened to log last; and the detail was being collected
+  and then thrown away — every AWS fetcher recorded its causes into a temp
+  failure log whose only reader, across all 80, was `wc -l`, and the exit trap
+  deleted it.
+
+  `metadata.error` now names the call that failed — for AWS that is the call
+  label, not yet the AWS error text behind it (corrected in 0.5.1-beta above) —
+  and `metadata.error_code` is one of seven closed values (`auth_failed`,
+  `not_authorized`, `target_unreachable`, `rate_limited`, `bad_config`,
+  `partial_failure`, `internal_error`). Forcing a
+  credential failure on `aws_guard_duty_findings` reported
+  `Encountered 2 API failures during collection` before. It now reports:
+
+  ```json
+  {
+    "error": "2 AWS API failure(s); first: aws sts get-caller-identity failed;aws guardduty list-detectors failed (exit=254): aws: [ERROR]: An error occurred (UnrecognizedClientException) when calling the ListDetectors operation: The security token included in the request is invalid.",
+    "code": "partial_failure"
+  }
+  ```
+
+  **228 non-zero exit paths across the tree, 0 unreported.** Note that the AWS
+  family reports `partial_failure` uniformly — it counts and quotes the calls
+  that broke rather than classifying *why*. Distinguishing `auth_failed` from
+  `rate_limited` from `not_authorized` there needs per-call classification and is
+  follow-up work; the reason text is what carries that information today.
+
+  **For fetcher authors this is a contract change.** Reporting a failure is no
+  longer something you hand-roll: there is now exactly one helper per runtime —
+  [`fetchers/_lib/status.sh`](fetchers/_lib/status.sh) and
+  [`fetchers/_lib/fetcher_status.py`](fetchers/_lib/fetcher_status.py), both
+  named `report_failure` — and
+  [`docs/fetcher_contract.md`](docs/fetcher_contract.md) mandates it. It logs
+  *and* reports, so it is the whole failure path; logging inside the helper is
+  what guarantees the reason is the last line on stderr, which is what the
+  fallback reads. The same nine-line status write previously existed as **27
+  copies under two names** (`report_failure` and `write_status`) — 22 in
+  individual fetchers, three in category-shared modules, and one in each
+  scaffolding template — because the porting playbook printed those nine lines
+  and told authors to paste them. The playbook and both templates now import the
+  helper instead. A category-shared module may
+  re-export it and must not reimplement it, which is how all 80 AWS fetchers
+  were wired without a single per-file `source` line.
+
+  **One known regression:** `crowdstrike` fetchers no longer set
+  `metadata.error_code`. They passed their own strings (`collection_error`, a raw
+  HTTP status) which the shared helper drops as outside the closed set. The error
+  *text* is intact, and mapping those onto the seven real codes is a judgement
+  call left to its own change.
 
 - **Every fetcher's `ksis` re-keyed to the FedRAMP Consolidated Rules for 2026.**
   FedRAMP replaced the numeric Phase One indicators (release 25.05C, 52 of them)
@@ -63,13 +243,15 @@ schemas and the `paramify` CLI — not the internal code.
   measure against. FedRAMP 20x program deliverables (the VER reports) keep the
   name.
 
-### Added
+### Deprecated
 
-- **[`docs/ksi_mapping.md`](docs/ksi_mapping.md)** — the full fetcher ↔ KSI
-  mapping, readable in both directions, with FedRAMP's verbatim statements and
-  NIST control crosswalk, and the open gaps called out as fetcher backlog.
-  Generated by `tools/gen_ksi_mapping.py`; the generator is idempotent, so CI can
-  fail on a diff to keep it honest.
+- **`write_status` in `azure_common` and `gcp_common`** is now an alias for the
+  shared `report_failure`. The 46 Azure and GCP call sites still using it keep
+  working and are unchanged here; they log twice as a result (their own
+  `logger.error` plus the helper's), which is cosmetic in the run log and does
+  not affect what Paramify receives. Renaming those call sites and dropping the
+  alias is one later pass, because the static conformance scan has to stop
+  crediting the old name at the same moment the call sites change.
 
 ### Fixed
 
@@ -86,6 +268,27 @@ schemas and the `paramify` CLI — not the internal code.
   cursor; a `Tree`'s and an `OptionList`'s `up` / `down` still move their own.
   Affects the confirm, form, and picker dialogs, the catalog filter, and the
   Manifest and Paramify action rows.
+
+- **MySQL RDS instances were reported as not enforcing TLS even when they were.**
+  `rds.force_ssl` is a PostgreSQL and SQL Server parameter; MySQL uses
+  `require_secure_transport`. `aws_component_ssl_enforcement_status` and
+  `aws_rds_tls_configuration` only read the former, so every MySQL instance came
+  back as unenforced regardless of its actual configuration. Both now accept
+  either parameter, matching `ON` / `1` / `true` case-insensitively. Contributed
+  by [@jazzl0ver](https://github.com/jazzl0ver).
+
+  **The evidence payload grows** (additively): `rds_tls_configuration` gains
+  `require_secure_transport`, `require_secure_transport_source`, and a derived
+  `ssl_enforced` per parameter group, plus two summary counters. `ssl_enforced`
+  is the either-parameter roll-up and is the field to standardize on downstream;
+  `force_ssl` is still emitted alongside it. **Any validator matching on the old
+  shape is worth re-checking.** Not yet exercised against a live MySQL instance —
+  the parameter names follow the AWS documentation.
+
+- **`aws_fsx_encryption_status` over-counted its own failures.** It appended raw
+  multi-line stderr to the failure log that the failure count is a `wc -l` of, so
+  a run with 2 failures reported 3. The stderr is now flattened to one line per
+  failure.
 
 - **One unreadable KMS key no longer fails the whole collection.**
   `aws_kms_key_rotation` exited non-zero when it could not read a single key's
@@ -577,7 +780,9 @@ change before 1.0 (see [`docs/versioning.md`](docs/versioning.md)).
 - TUI restyled — border titles, status pills, denser controls, and hatched empty
   states.
 
-[Unreleased]: https://github.com/paramify/paramify-fetchers/compare/v0.4.0-beta...HEAD
+[Unreleased]: https://github.com/paramify/paramify-fetchers/compare/v0.5.1-beta...HEAD
+[0.5.1-beta]: https://github.com/paramify/paramify-fetchers/compare/v0.5.0-beta...v0.5.1-beta
+[0.5.0-beta]: https://github.com/paramify/paramify-fetchers/compare/v0.4.0-beta...v0.5.0-beta
 [0.4.0-beta]: https://github.com/paramify/paramify-fetchers/compare/v0.3.1-beta...v0.4.0-beta
 [0.3.1-beta]: https://github.com/paramify/paramify-fetchers/compare/v0.3.0-beta...v0.3.1-beta
 [0.3.0-beta]: https://github.com/paramify/paramify-fetchers/compare/v0.2.1-beta...v0.3.0-beta
