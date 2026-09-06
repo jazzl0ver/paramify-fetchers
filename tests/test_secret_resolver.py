@@ -10,7 +10,13 @@ from __future__ import annotations
 
 import pytest
 
-from framework.secret_resolver import SecretResolutionError, resolve, resolve_dict
+from framework.secret_resolver import (
+    SecretResolutionError,
+    env_var_name,
+    is_env_ref_attempt,
+    resolve,
+    resolve_dict,
+)
 
 
 def test_resolves_valid_reference_from_env(monkeypatch):
@@ -51,12 +57,49 @@ def test_resolve_dict_resolves_each_value(monkeypatch):
     assert resolve_dict({"a": "${env:A}", "b": "${env:B}"}) == {"a": "1", "b": "2"}
 
 
-def test_characterizes_silent_passthrough_of_malformed_refs(monkeypatch):
-    """CHARACTERIZATION (not an endorsement). A value that LOOKS like a reference
-    but doesn't match the strict ^${env:UPPER_SNAKE}$ form is passed through
-    verbatim — a lowercase var name, or an embedded reference. This is the known
-    hardening gap from the audit; pinning it here means a future fix flips this
-    deliberately instead of silently."""
+@pytest.mark.parametrize("bad", [
+    "${env:my_token}",   # lowercase var name — the common typo
+    "${env:MY-TOKEN}",   # hyphen is not a valid env var character
+    "${env:}",           # empty name
+    "${env:FOO",         # unclosed
+])
+def test_malformed_reference_raises_instead_of_passing_through(bad, monkeypatch):
+    """A broken reference must fail loudly, not become the credential.
+
+    This replaces a characterization test that pinned the old silent
+    passthrough. Passing it through handed the fetcher the literal string
+    "${env:my_token}" as its secret; the TUI rendered it as a correctly-set
+    variable named my_token, and redaction then added the literal to the secret
+    sink — so the 401 that echoed it back printed ***REDACTED*** exactly where
+    the bug's own name would have been. Three layers agreeing on a wrong answer.
+    """
     monkeypatch.setenv("my_token", "secret")
-    assert resolve("${env:my_token}") == "${env:my_token}"   # lowercase: NOT resolved to "secret"
-    assert resolve("prefix-${env:T}") == "prefix-${env:T}"    # embedded: NOT substituted
+    with pytest.raises(SecretResolutionError, match="Malformed secret reference"):
+        resolve(bad)
+
+
+def test_a_value_that_is_not_a_reference_is_still_a_literal(monkeypatch):
+    """Literal secrets are supported, so only a value that OPENS with the sigil
+    counts as an attempted reference. An embedded ${env:...} stays a literal —
+    substitution was never a feature, and a real password may contain anything."""
+    monkeypatch.setenv("T", "v")
+    assert resolve("prefix-${env:T}") == "prefix-${env:T}"
+    assert resolve("hunter2") == "hunter2"
+    assert resolve("https://host/path$notaref") == "https://host/path$notaref"
+
+
+def test_env_var_name_and_resolve_agree_on_what_is_valid(monkeypatch):
+    """The display path and the run path must not disagree — that disagreement
+    is what let the console show a malformed ref as set."""
+    monkeypatch.setenv("REAL_TOKEN", "v")
+    assert env_var_name("${env:REAL_TOKEN}") == "REAL_TOKEN"
+    assert resolve("${env:REAL_TOKEN}") == "v"
+
+    assert env_var_name("${env:my_token}") is None
+    assert is_env_ref_attempt("${env:my_token}") is True
+    with pytest.raises(SecretResolutionError):
+        resolve("${env:my_token}")
+
+    assert env_var_name("literal") is None
+    assert is_env_ref_attempt("literal") is False
+    assert resolve("literal") == "literal"
