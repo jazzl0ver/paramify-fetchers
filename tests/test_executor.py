@@ -487,24 +487,29 @@ def test_timeout_kills_the_whole_process_group(tmp_path):
     assert elapsed < 15, f"timeout did not bound the run: took {elapsed:.1f}s for a 1s timeout"
 
 
-def test_a_backgrounded_grandchild_does_not_hang_the_run(tmp_path):
+def test_a_backgrounded_grandchild_does_not_hang_the_run(tmp_path, monkeypatch):
     """A fetcher that exits 0 leaving a background child is still bounded.
 
     No timeout fires here — bash exits immediately and successfully — so the
     process-group kill never runs. The orphan still holds the stdout pipe, and
     only the drain deadline stops the runner waiting on it indefinitely.
+
+    The deadline is shortened for the test: this path always waits it out, so at
+    the real 10s it would cost that on every CI leg to prove the same thing.
     """
     import time
 
-    from framework.runner.executor import _DRAIN_JOIN_TIMEOUT, _invoke
+    from framework.runner import executor
+
+    monkeypatch.setattr(executor, "_DRAIN_JOIN_TIMEOUT", 1.0)
 
     fetcher, out = _bash_fetcher(tmp_path, "#!/bin/bash\nsleep 30 &\nexit 0\n", timeout=60)
     started = time.monotonic()
-    result = _invoke(fetcher, {"PATH": "/usr/bin:/bin"}, None, out)
+    result = executor._invoke(fetcher, {"PATH": "/usr/bin:/bin"}, None, out)
     elapsed = time.monotonic() - started
 
     assert result.exit_code == 0
-    assert elapsed < _DRAIN_JOIN_TIMEOUT + 5, f"drain was not bounded: {elapsed:.1f}s"
+    assert elapsed < 6, f"drain was not bounded: {elapsed:.1f}s"
 
 
 def test_a_raising_log_callback_does_not_fail_the_fetcher(tmp_path):
