@@ -447,3 +447,96 @@ def test_no_status_file_written_is_not_an_error(tmp_path):
     r = run_entry(make_fetcher(fdir), ManifestEntry(use="t_fetcher"), tmp_path / "out")[0]
     assert r.exit_code == 1
     assert r.error is None and r.error_code is None
+
+
+# --------------------------------------------------------------------------- #
+# Timeout containment. The runner's own timeout is the only ceiling on a run,
+# so it has to hold when the process that is actually stuck is a grandchild —
+# which is the common shape here, since most fetchers are bash shelling out to
+# aws/curl/kubectl.
+# --------------------------------------------------------------------------- #
+
+def _bash_fetcher(tmp_path, script: str, timeout: int):
+    (tmp_path / "fetcher.sh").write_text(script)
+    out = tmp_path / "out"
+    out.mkdir(exist_ok=True)
+    return make_fetcher(
+        tmp_path, runtime_type="bash", runtime_entry="fetcher.sh",
+        runtime_timeout=timeout,
+    ), out
+
+
+def test_timeout_kills_the_whole_process_group(tmp_path):
+    """A hung grandchild must not outlive the timeout.
+
+    bash sleeps in the foreground with a child sleep of its own. Killing only
+    the direct child leaves the grandchild holding the inherited stdout pipe,
+    so the drain threads block on a pipe that never reaches EOF and the runner
+    waits out the full sleep instead of its own timeout.
+    """
+    import time
+
+    from framework.runner.executor import _invoke
+
+    fetcher, out = _bash_fetcher(tmp_path, "#!/bin/bash\nsleep 30\n", timeout=1)
+    started = time.monotonic()
+    result = _invoke(fetcher, {"PATH": "/usr/bin:/bin"}, None, out)
+    elapsed = time.monotonic() - started
+
+    assert result.exit_code == 124, "timeout should report the timeout exit code"
+    assert elapsed < 15, f"timeout did not bound the run: took {elapsed:.1f}s for a 1s timeout"
+
+
+def test_a_backgrounded_grandchild_does_not_hang_the_run(tmp_path, monkeypatch):
+    """A fetcher that exits 0 leaving a background child is still bounded.
+
+    No timeout fires here — bash exits immediately and successfully — so the
+    process-group kill never runs. The orphan still holds the stdout pipe, and
+    only the drain deadline stops the runner waiting on it indefinitely.
+
+    The deadline is shortened for the test: this path always waits it out, so at
+    the real 10s it would cost that on every CI leg to prove the same thing.
+    """
+    import time
+
+    from framework.runner import executor
+
+    monkeypatch.setattr(executor, "_DRAIN_JOIN_TIMEOUT", 1.0)
+
+    fetcher, out = _bash_fetcher(tmp_path, "#!/bin/bash\nsleep 30 &\nexit 0\n", timeout=60)
+    started = time.monotonic()
+    result = executor._invoke(fetcher, {"PATH": "/usr/bin:/bin"}, None, out)
+    elapsed = time.monotonic() - started
+
+    assert result.exit_code == 0
+    assert elapsed < 6, f"drain was not bounded: {elapsed:.1f}s"
+
+
+def test_a_raising_log_callback_does_not_fail_the_fetcher(tmp_path):
+    """The runner must not kill a healthy fetcher because its consumer raised.
+
+    _drain's finally closes the pipe, so an exception escaping on_line makes the
+    child die on its next write — and the run then reports a fetcher failure for
+    a failure the runner itself caused. The live case is the TUI, which forwards
+    each line as a Textual message; that raises once the screen is torn down, so
+    quitting mid-run would mark the running fetcher failed.
+    """
+    from framework.runner.executor import _invoke
+
+    fetcher, out = _bash_fetcher(
+        tmp_path,
+        '#!/bin/bash\nfor i in $(seq 1 200); do echo "line $i"; done\nexit 0\n',
+        timeout=60,
+    )
+
+    seen = []
+
+    def hostile(line):
+        seen.append(line)
+        raise RuntimeError("consumer is gone")
+
+    result = _invoke(fetcher, {"PATH": "/usr/bin:/bin"}, None, out, on_line=hostile)
+
+    assert result.exit_code == 0, "a healthy fetcher must survive a raising consumer"
+    assert result.stdout.count("line ") == 200, "every line must still reach the record"
+    assert len(seen) == 1, "forwarding stops after the consumer first raises"

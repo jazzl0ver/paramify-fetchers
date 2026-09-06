@@ -64,8 +64,8 @@ _LIST_ERR="$(mktemp -t aws_guard_duty_findings_list.XXXXXX)"
 detectors=$(aws guardduty list-detectors --query 'DetectorIds[*]' --output json 2>"$_LIST_ERR")
 ec=$?
 if [ $ec -ne 0 ]; then
-    if grep -q 'SubscriptionRequiredException' "$_LIST_ERR"; then
-        log_info "GuardDuty not enabled in $REGION (SubscriptionRequiredException) -- recording as no findings"
+    if aws_service_unavailable "$_LIST_ERR"; then
+        log_info "GuardDuty not enabled in $REGION -- recording as no findings"
     else
         echo "aws guardduty list-detectors failed (exit=$ec): $(tr '\n' ' ' < "$_LIST_ERR")" >> "$_FAILURE_LOG"
     fi

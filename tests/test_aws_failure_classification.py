@@ -256,3 +256,41 @@ def test_not_enabled_branch_never_records_a_failure():
     assert not offenders, (
         f"not-enabled branch writes to the failure log: {offenders}"
     )
+
+
+def test_no_aws_fetcher_hand_rolls_service_unavailable_detection():
+    """"Service not in use" must be decided by the shared helper, not by grep.
+
+    `aws_service_unavailable` matches eight markers case-insensitively:
+    SubscriptionRequiredException, OptInRequired, "is not enabled",
+    InvalidAccessException, AWSOrganizationsNotInUseException, "not a member of
+    an organization", "needs a subscription for the service", and
+    ResourceNotFoundException. Three fetchers used to test one of those eight
+    with a case-sensitive `grep -q`, so in a region answering OptInRequired
+    instead they reported a hard collection failure where their siblings
+    correctly recorded not-enabled and exited 0.
+
+    The point is not the grep — it is that a fetcher must not carry its own
+    opinion about what "not enabled" looks like.
+    """
+    import re
+
+    # A marker tested outside a call to the helper, i.e. someone re-deciding.
+    hand_rolled = re.compile(
+        r"(grep|=~|case)\b[^\n]*"
+        r"(SubscriptionRequiredException|OptInRequired|InvalidAccessException"
+        r"|AWSOrganizationsNotInUseException|is not enabled"
+        r"|not a member of an organization)",
+        re.IGNORECASE,
+    )
+    offenders = []
+    for p in _fetchers():
+        for n, line in enumerate(p.read_text().splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            if hand_rolled.search(line):
+                offenders.append(f"{p.parent.name}:{n}")
+    assert not offenders, (
+        "these decide 'service not enabled' themselves instead of calling "
+        f"aws_service_unavailable: {offenders}"
+    )
