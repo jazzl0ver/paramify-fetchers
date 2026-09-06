@@ -35,6 +35,7 @@ from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
 from packaging.utils import canonicalize_name
 
+from framework import yaml_io
 from framework.config_loader import discover_fetchers, discover_platforms
 from framework.contract import ConfigField, Secret, TargetField, effective_secrets
 from framework.envelope import is_enveloped, wrap_outputs
@@ -200,7 +201,7 @@ def catalog(root: Path) -> dict:
 
 def _load_ksi_reference(root: Path) -> dict:
     """Load the canonical FedRAMP KSI reference (the coverage denominator)."""
-    return yaml.safe_load((root / "framework" / "reference" / "ksis.yaml").read_text())
+    return yaml_io.load_path(root / "framework" / "reference" / "ksis.yaml")
 
 
 def ksi_coverage(root: Path) -> dict:
@@ -589,7 +590,7 @@ def upload_readiness(root: Path, config_path: Optional[Path] = None) -> dict:
     config: dict = {}
     if config_path is not None:
         try:
-            loaded = yaml.safe_load(Path(config_path).read_text())
+            loaded = yaml_io.load_path(Path(config_path))
             config = loaded if isinstance(loaded, dict) else {}
         except (OSError, yaml.YAMLError) as exc:
             return {
@@ -635,7 +636,7 @@ def read_manifest(path: Path) -> dict:
     p = Path(path)
     if not p.exists():
         return init_manifest()
-    data = yaml.safe_load(p.read_text())
+    data = yaml_io.load_path(p)
     return data if isinstance(data, dict) else init_manifest()
 
 
@@ -1113,7 +1114,7 @@ def sync_validators(
     validators = syncer.collect_validators(root, manifest_path, reference_ids)
     config: dict = {}
     if config_path:
-        config = yaml.safe_load(Path(config_path).read_text()) or {}
+        config = yaml_io.load_path(Path(config_path)) or {}
     return syncer.sync_validators(
         validators,
         config=config,
@@ -1609,7 +1610,7 @@ def _manifest_summary(path: Path, root: Path, fetchers=None, platforms=None) -> 
         "readable": True,
     }
     try:
-        raw = yaml.safe_load(path.read_text())
+        raw = yaml_io.load_path(path)
     except (OSError, yaml.YAMLError):
         summary["readable"] = False
         return summary

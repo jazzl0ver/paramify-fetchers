@@ -13,9 +13,9 @@ import json
 from pathlib import Path
 from typing import Dict, Iterable, List, Set
 
-import yaml
 from jsonschema import Draft202012Validator
 
+from framework import yaml_io
 from framework.contract import Fetcher, Validator
 
 
@@ -61,7 +61,7 @@ def discover_validators(repo_root: Path) -> Dict[str, Validator]:
         for yaml_path in sorted(category_dir.glob("*.yaml")):
             if yaml_path.name.startswith("_") or not yaml_path.is_file():
                 continue
-            data = yaml.safe_load(yaml_path.read_text())
+            data = yaml_io.load_path(yaml_path)
             errors = list(validator.iter_errors(data))
             if errors:
                 detail = "\n".join(f"  {e.message}" for e in errors)

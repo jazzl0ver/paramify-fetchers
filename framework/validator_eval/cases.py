@@ -13,8 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import yaml
-
+from framework import yaml_io
 from framework.validator_eval import evaluate, node_available
 
 # Paramify combines a set's validators worst-first.
@@ -57,7 +56,7 @@ def run_cases(
     n_cases = n_failed = n_vacuous = 0
 
     for path in sorted(cases_dir.glob("*.yaml")):
-        doc = yaml.safe_load(path.read_text()) or {}
+        doc = yaml_io.load_path(path) or {}
         key, ref = doc.get("validator"), doc.get("evidence_set")
         if bool(key) == bool(ref):
             files.append({"file": path.name, "error":
