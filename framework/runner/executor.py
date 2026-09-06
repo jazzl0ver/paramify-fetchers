@@ -14,6 +14,7 @@ The runner's contract with a fetcher:
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -294,6 +295,30 @@ def _build_env(
     return env
 
 
+#: Ceiling on waiting for the drain threads once the child is gone, shared
+#: across both joins. Reachable when a fetcher leaves a grandchild holding
+#: the pipe — either one that escaped the process group, or one left running
+#: by a fetcher that exited 0, which no timeout covers.
+_DRAIN_JOIN_TIMEOUT = 10.0
+
+
+def _kill_process_group(proc: subprocess.Popen) -> None:
+    """SIGKILL the child's whole process group, falling back to the child alone.
+
+    start_new_session put the child in its own group, so this reaches the
+    grandchildren a bash fetcher spawned. Both lookups race with normal exit:
+    the process may be gone between wait() timing out and the kill landing,
+    which is not an error.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
+
 def _drain(stream, sink: List[str], on_line: Optional[Callable[[str], None]],
            secret_values=None) -> None:
     """Read a subprocess pipe to EOF, accumulating lines and optionally
@@ -362,6 +387,11 @@ def _invoke(
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,  # line-buffered so on_line fires per line
+            # Own process group, so a timeout can kill the whole tree. Most
+            # fetchers here are bash and shell out to aws/curl/kubectl; killing
+            # only the direct child leaves the grandchild holding the inherited
+            # pipe, and the drain threads then block until *it* exits.
+            start_new_session=True,
         )
 
         stdout_lines: List[str] = []
@@ -376,12 +406,19 @@ def _invoke(
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             timed_out = True
-            proc.kill()
+            _kill_process_group(proc)
             proc.wait()
 
-        # Threads finish once the pipes hit EOF (which the kill guarantees).
-        t_out.join()
-        t_err.join()
+        # The group kill closes every inherited pipe write end, so both threads
+        # see EOF. The deadline is belt-and-braces, and it covers the case a
+        # timeout does NOT: a fetcher that exits 0 having left a grandchild
+        # running in the background still holds the pipe open, and no kill is
+        # ever issued for it. One shared deadline across both joins, so the
+        # bound is what it says rather than twice it. Losing a few trailing log
+        # lines beats never returning.
+        drain_deadline = time.monotonic() + _DRAIN_JOIN_TIMEOUT
+        t_out.join(timeout=max(0.0, drain_deadline - time.monotonic()))
+        t_err.join(timeout=max(0.0, drain_deadline - time.monotonic()))
 
         # Read before the temp dir is removed. Skipped on timeout: the runner's
         # own "killed" message below is the accurate reason, and a status file
