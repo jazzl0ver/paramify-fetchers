@@ -330,7 +330,18 @@ def _drain(stream, sink: List[str], on_line: Optional[Callable[[str], None]],
         for line in stream:
             sink.append(line)
             if on_line is not None:
-                on_line(_redact(line.rstrip("\n"), secret_values))
+                try:
+                    on_line(_redact(line.rstrip("\n"), secret_values))
+                except Exception:
+                    # A raising consumer must not take the fetcher down with it.
+                    # This thread's finally closes the pipe, the child dies on
+                    # its next write, and the run reports a fetcher failure for
+                    # a failure the runner caused. The TUI is the live case: it
+                    # forwards each line as a Textual message, which raises once
+                    # the screen is torn down — quitting mid-run would fail the
+                    # fetcher. Dropping the line is the right trade; the sink
+                    # still has it, so nothing is lost from the record.
+                    on_line = None
     finally:
         stream.close()
 

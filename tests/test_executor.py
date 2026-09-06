@@ -505,3 +505,33 @@ def test_a_backgrounded_grandchild_does_not_hang_the_run(tmp_path):
 
     assert result.exit_code == 0
     assert elapsed < _DRAIN_JOIN_TIMEOUT + 5, f"drain was not bounded: {elapsed:.1f}s"
+
+
+def test_a_raising_log_callback_does_not_fail_the_fetcher(tmp_path):
+    """The runner must not kill a healthy fetcher because its consumer raised.
+
+    _drain's finally closes the pipe, so an exception escaping on_line makes the
+    child die on its next write — and the run then reports a fetcher failure for
+    a failure the runner itself caused. The live case is the TUI, which forwards
+    each line as a Textual message; that raises once the screen is torn down, so
+    quitting mid-run would mark the running fetcher failed.
+    """
+    from framework.runner.executor import _invoke
+
+    fetcher, out = _bash_fetcher(
+        tmp_path,
+        '#!/bin/bash\nfor i in $(seq 1 200); do echo "line $i"; done\nexit 0\n',
+        timeout=60,
+    )
+
+    seen = []
+
+    def hostile(line):
+        seen.append(line)
+        raise RuntimeError("consumer is gone")
+
+    result = _invoke(fetcher, {"PATH": "/usr/bin:/bin"}, None, out, on_line=hostile)
+
+    assert result.exit_code == 0, "a healthy fetcher must survive a raising consumer"
+    assert result.stdout.count("line ") == 200, "every line must still reach the record"
+    assert len(seen) == 1, "forwarding stops after the consumer first raises"
