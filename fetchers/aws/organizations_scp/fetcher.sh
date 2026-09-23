@@ -32,7 +32,8 @@ _FAILURE_LOG="$(mktemp -t aws_organizations_scp_fail.XXXXXX)"
 _ORG_JSON="$(mktemp -t aws_organizations_scp_org.XXXXXX)"
 _ITEMS_JSON="$(mktemp -t aws_organizations_scp_policies.XXXXXX)"
 _TARGETS_JSON="$(mktemp -t aws_organizations_scp_targets.XXXXXX)"
-trap 'rm -f "$_FETCHER_TMP_JSON" "$_FAILURE_LOG" "$_AWS_ERR_LOG" "$_ORG_JSON" "$_ITEMS_JSON" "$_TARGETS_JSON"' EXIT
+_SUMMARIES_JSON="$(mktemp -t aws_organizations_scp_summaries.XXXXXX)"
+trap 'rm -f "$_FETCHER_TMP_JSON" "$_FAILURE_LOG" "$_AWS_ERR_LOG" "$_ORG_JSON" "$_ITEMS_JSON" "$_TARGETS_JSON" "$_SUMMARIES_JSON"' EXIT
 
 log_info() { printf '%s INFO aws_organizations_scp %s\n' "$(date -u +'%Y-%m-%d %H:%M:%S')" "$*" >&2; }
 log_error() { printf '%s ERROR aws_organizations_scp %s\n' "$(date -u +'%Y-%m-%d %H:%M:%S')" "$*" >&2; }
@@ -112,32 +113,35 @@ else
             echo "aws organizations list-targets-for-policy ($policy_id) failed" >> "$_FAILURE_LOG"
             targets='[]'
         fi
-        [ -n "$targets" ] || targets='{"__unreadable__": true}'
+        [ -n "$targets" ] || targets='[]'
 
         printf '%s\n' "$policy_doc" >> "$_ITEMS_JSON"
         printf '%s\n' "$targets" >> "$_TARGETS_JSON"
     done < <(echo "$policies" | jq -r '.[] | .[0]' 2>/dev/null)
+    printf '%s' "$policies" > "$_SUMMARIES_JSON"
 fi
 
-# Kept exactly from the per-SCP version: an SCP whose Content does not parse
-# (including one whose describe-policy failed, so Content is null) makes
-# ($policy.Content | fromjson?) produce no object, and that emptied the whole
-# organization record -- nothing is written to results. An empty org_data does
-# the same.
+# One SCP that cannot be read must not cost the others. Content that does not
+# parse is recorded as null, and an SCP whose describe-policy failed keeps the
+# Id / Arn / Name / AwsManaged list-policies already returned. (The per-SCP
+# version built Content with `fromjson?`, which on a parse failure produced no
+# object at all -- and that emptied the whole organization record.)
 printf '%s' "$org_data" > "$_ORG_JSON"
-jq --slurpfile org "$_ORG_JSON" --slurpfile docs "$_ITEMS_JSON" --slurpfile targets "$_TARGETS_JSON" '
-    [range(0; $docs | length) as $i | $docs[$i] as $policy | $targets[$i] as $t
-        | [if ($t | type) == "object" and $t.__unreadable__ == true then empty else {
-            "Id": $policy.PolicySummary.Id,
-            "Arn": $policy.PolicySummary.Arn,
-            "Name": $policy.PolicySummary.Name,
-            "Type": $policy.PolicySummary.Type,
-            "AwsManaged": $policy.PolicySummary.AwsManaged,
-            "Content": ($policy.Content | fromjson?),
-            "Targets": $t
-        } end]] as $scps
-    | if ($org | length) == 0 or any($scps[]; length == 0) then .
-      else .results += [$org[0] | .ServiceControlPolicies += [$scps[][]]] end
+[ -s "$_SUMMARIES_JSON" ] || echo '[]' > "$_SUMMARIES_JSON"
+jq --slurpfile org "$_ORG_JSON" --slurpfile docs "$_ITEMS_JSON" --slurpfile targets "$_TARGETS_JSON" \
+   --slurpfile summaries "$_SUMMARIES_JSON" '
+    ($summaries[0] // []) as $listed
+    | [range(0; $docs | length) as $i | $docs[$i] as $policy | ($listed[$i] // []) as $row
+        | {
+            "Id": ($policy.PolicySummary.Id // $row[0]),
+            "Arn": ($policy.PolicySummary.Arn // $row[1]),
+            "Name": ($policy.PolicySummary.Name // $row[2]),
+            "Type": ($policy.PolicySummary.Type // "SERVICE_CONTROL_POLICY"),
+            "AwsManaged": (if $policy.PolicySummary.AwsManaged == null then $row[3] else $policy.PolicySummary.AwsManaged end),
+            "Content": (try ($policy.Content | fromjson) catch null),
+            "Targets": $targets[$i]
+        }] as $scps
+    | .results += [$org[0] | .ServiceControlPolicies += $scps]
 ' "$OUTPUT_JSON" > "$_FETCHER_TMP_JSON" && mv "$_FETCHER_TMP_JSON" "$OUTPUT_JSON"
 
 aws_finish
