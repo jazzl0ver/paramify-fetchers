@@ -12,6 +12,24 @@ schemas and the `paramify` CLI — not the internal code.
 
 ### Added
 
+- **A Splunk category with seven fetchers**, one Splunk Enterprise deployment per
+  target, each with its own management URL (port 8089) and bearer token.
+  `splunk_index_retention` (retention, archive-or-delete on freeze, data
+  integrity control), `splunk_index_activity`, `splunk_log_source_freshness`,
+  `splunk_data_inputs`, `splunk_alert_rules` (Splunk Web's own alert definition,
+  with run and fire history from `_internal` and `_audit`),
+  `splunk_alert_delivery` and `splunk_role_index_access` (effective index access
+  after inheritance and denials, delete rights, dormant accounts). This closes
+  KSI-MLA-ALA. Every fetcher is a `collect(client, config)` function handed to a
+  shared `run()`, which checks the token's capabilities first and fails the
+  collection, rather than publishing a partial list, when Splunk returns less
+  than everything: a `count` cut short of `paging.total`, a search answered with
+  a warning, or an index list that disagrees with `indexes.conf` and the search
+  peers. Tested against Splunk Enterprise 10.4.3, where a role with no
+  capabilities saw 1 of 4 users and 127 of 176 saved searches, and stock `admin`
+  12 of 26 roles, each time with a `paging.total` that agreed. The collection role
+  is in `fetchers/splunk/README.md`. Splunk Cloud is not yet supported.
+
 - **A Better Stack category and its first fetcher** —
   `betterstack_public_status_page`, which GETs a public status page's own
   `/index.json` and records it as evidence. No credential: a Better Stack status

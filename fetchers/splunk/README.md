@@ -209,8 +209,13 @@ against a live instance first.
 
 ## Known limitations
 
-- Proven on Splunk Enterprise 10.4.3 standalone only. Splunk Cloud and
-  distributed deployments are untested.
+- Proven on Splunk Enterprise 10.4.3 standalone only. Distributed deployments
+  are untested.
+- Splunk Cloud is not yet supported. Its REST API serves the search tier only,
+  and officially only access control, knowledge objects, KV store, metrics,
+  federated search and search. The index list, `indexes.conf` and data inputs
+  that these fetchers read come from Splunk's Admin Config Service on Cloud
+  instead.
 - An alert that is running while `splunk_alert_delivery` collects can show up
   in `summary.attempts_unmatched`, because Splunk logs the delivery before it
   logs the scheduled run it belongs to. The next collection matches it.
