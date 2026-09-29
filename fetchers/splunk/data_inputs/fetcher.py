@@ -171,7 +171,7 @@ def collect_received(client, window):
             "last_indexed": iso(last_indexed),
             "minutes_since_last_indexed": since,
             "max_silence_minutes": window,
-            "silent": since is None or since > window,
+            "silent": since is None or abs(since) > window,
         })
     return out, now
 

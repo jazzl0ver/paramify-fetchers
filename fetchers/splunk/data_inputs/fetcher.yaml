@@ -103,8 +103,8 @@ evidence_set:
     `last_indexed` is when an indexer last wrote an event of that stream,
     whatever the event's own timestamp says. `minutes_since_last_indexed` is
     measured from `metadata.collected_at`, taken after the searches, and
-    `silent` is true when it exceeds `max_silence_minutes` (the category's
-    `max_silence_minutes`, emitted on every row). Stock Splunk writes many
+    `silent` is true when it exceeds `max_silence_minutes` in either direction
+    (the category's `max_silence_minutes`, emitted on every row). Stock Splunk writes many
     sourcetypes once at startup or install (splunk_version,
     splunk_first_install, splunkd_stderr …), which read silent an hour later;
     which streams must keep arriving is a judgement over `host`, `index`,

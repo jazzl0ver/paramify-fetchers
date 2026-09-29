@@ -37,7 +37,7 @@ SEARCHABLE_INDEXES_SPL = "| eventcount summarize=false index=* index=_* | stats 
 
 def judge(epoch, now, window):
     since = minutes_since(epoch, now)
-    return {"minutes_since": since, "max_silence_minutes": window, "silent": since is None or since > window}
+    return {"minutes_since": since, "max_silence_minutes": window, "silent": since is None or abs(since) > window}
 
 
 def collect_hosts(client, now, window):

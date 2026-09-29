@@ -58,8 +58,9 @@ evidence_set:
     `| tstats count min(_time) max(_time) max(_indextime) where index=* OR index=_* by host`
     over all time: `last_indexed` is when Splunk last received data from the
     host, `minutes_since_last_indexed` is measured from collection time, and
-    `silent` is true when that exceeds `max_silence_minutes`, which is emitted
-    on every row. `forwarders[]` is every forwarder with a connection in
+    `silent` is true when that exceeds `max_silence_minutes` in either
+    direction (a time that far after collection says nothing about recent
+    receipt), and the window is emitted on every row. `forwarders[]` is every forwarder with a connection in
     `index=_internal source=*metrics.log group=tcpin_connections` over the last
     `forwarder_lookback_days`, with type, version, source IP and last
     connection time judged against the same window; a forwarder silent longer
