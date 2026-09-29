@@ -166,6 +166,22 @@ schemas and the `paramify` CLI — not the internal code.
 
 ### Changed
 
+- **AWS fetchers finish in large accounts** (67 fetchers, minor version
+  bumps). Many made several AWS CLI calls, and started several `jq` processes,
+  per resource, so an account with thousands of snapshots, roles or security
+  groups ran past the runner's 600-second timeout. They now read each resource
+  type with one paginated or batch call where AWS offers one, and build their
+  records in a single `jq` pass. Measured against an account with 2,925 EBS
+  snapshots, 912 IAM roles, 1,003 customer-managed policies and 1,009 security
+  groups: `ebs_snapshot_status`, `iam_roles`, `iam_policies` and
+  `security_groups` each timed out before and now finish in 2–26 seconds with
+  2–4 calls, and every fetcher that finished before and after produced
+  byte-identical evidence. Fetchers with no bulk form of their per-item call
+  (S3 bucket settings, SQS queue attributes, KMS key details) still make one
+  call per item, but no longer start a process or rewrite the output per item.
+  The evidence-set instructions in each `fetcher.yaml` now list the commands
+  the fetcher actually runs.
+
 - **`azure_network_security_groups` shows outbound posture and NIC coverage**
   (0.1.0 → 0.2.0). Only an NSG's custom rules were read, so the platform's
   default AllowInternetOutBound — which permits all Internet egress unless a
@@ -290,6 +306,16 @@ schemas and the `paramify` CLI — not the internal code.
   until it migrates to the registry. New validators belong in `validators/`.
 
 ### Fixed
+
+- **`aws_auto_scaling_high_availability` lists each group's instances.** A
+  query error left `Instances` empty for every Auto Scaling group.
+
+- **`aws_organizations_scp` keeps the organization record when one SCP cannot
+  be read.** A single unparseable policy used to drop the whole organization
+  from the evidence.
+
+- **AWS failure reports name the fetcher** instead of `aws__shared`, and an
+  expired `aws login` session is reported as expired credentials.
 
 - **`azure_defender_assessments` collects again, with severity** (fetcher
   0.1.1). A missing import made every run fail with a `NameError`, so the
