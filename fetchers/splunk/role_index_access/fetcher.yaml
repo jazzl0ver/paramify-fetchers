@@ -36,6 +36,13 @@ target_schema:
       a deployment on a private CA. When set, TLS is verified against it and
       verify_ssl is ignored.
 
+config_schema:
+  dormant_days:
+    type: integer
+    default: 90
+    env: SPLUNK_DORMANT_DAYS
+    description: Days without a successful login before a user is reported dormant.
+
 runtime:
   type: python
   entry: fetcher.py
@@ -125,4 +132,7 @@ evidence_set:
     does not appear; nor authentication tokens, which act with their user's
     roles. Splunk core has no just-in-time elevation and records no access
     review, so every grant here is standing and nothing here shows it was
-    reviewed.
+    reviewed. `days_since_last_login` is whole days from
+    `last_successful_login` to collection, `never_logged_in` is true when
+    Splunk records no login, and `dormant` is true when
+    `days_since_last_login` is at least `metadata.dormant_days`.

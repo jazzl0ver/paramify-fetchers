@@ -14,6 +14,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR.parent / "_shared"))
 from splunk_client import (  # noqa: E402
     client_for,
+    env_int,
     finish,
     iso,
     now_epoch,
@@ -31,6 +32,7 @@ USERS = "services/authentication/users"
 CURRENT_CONTEXT = "services/authentication/current-context"
 REQUIRED_CAPABILITIES = ["search", "list_all_roles", "list_all_users", "rest_properties_get"]
 INTERNAL_ROLE_PREFIX = "_spl_"
+SECONDS_PER_DAY = 86400
 LOG_PRIVILEGE_CAPABILITIES = {"change_authentication", "delete_by_keyword", "edit_roles", "edit_roles_grantable",
                               "edit_tokens_all", "edit_user", "indexes_edit"}
 WILDCARD_RULE = ("'*' matches any characters within an index name; a pattern matches internal ('_'-prefixed) "
@@ -158,11 +160,12 @@ def role_row(graph, name, holders, importers, index_names):
     }
 
 
-def user_row(graph, entry, index_names):
+def user_row(graph, entry, index_names, now, dormant_days):
     c = entry["content"]
     direct = as_list(c.get("roles"))
     names, derived = access(graph, direct, set(as_list(c.get("capabilities"))), index_names)
     last_login = to_epoch(c.get("last_successful_login"))
+    idle_days = max(0, int((now - last_login) // SECONDS_PER_DAY)) if last_login else None
     return {
         "name": entry["name"],
         "type": c.get("type"),
@@ -171,6 +174,9 @@ def user_row(graph, entry, index_names):
         **derived,
         "locked_out": bool(c.get("locked-out")),
         "last_successful_login": iso(last_login) if last_login else None,
+        "days_since_last_login": idle_days,
+        "never_logged_in": idle_days is None,
+        "dormant": idle_days is not None and idle_days >= dormant_days,
     }
 
 
@@ -194,7 +200,7 @@ def check_derivation(client, graph, user_entries):
                     "Splunk's resolution differs from the role graph for " + "; ".join(problems), "internal_error")
 
 
-def collect(client, collected_as):
+def collect(client, collected_as, now, dormant_days):
     role_entries = client.list(ROLES)
     user_entries = client.list(USERS)
     index_entries = client.list_indexes()
@@ -202,7 +208,7 @@ def collect(client, collected_as):
         return None
     graph = RoleGraph(role_entries)
     index_names = {e["name"] for e in index_entries}
-    users = [user_row(graph, e, index_names) for e in sorted(user_entries, key=lambda e: e["name"].lower())]
+    users = [user_row(graph, e, index_names, now, dormant_days) for e in sorted(user_entries, key=lambda e: e["name"].lower())]
     holders, importers = {}, {}
     for u in users:
         for r in u["all_roles"]:
@@ -244,6 +250,8 @@ def summarize(result):
         "users_with_delete_by_keyword": [u["name"] for u in users if u["delete_by_keyword"]],
         "roles_with_delete_by_keyword": [r["name"] for r in roles if r["delete_by_keyword"]],
         "users_by_type": dict(Counter(str(u["type"]) for u in users)),
+        "users_dormant": [u["name"] for u in users if u["dormant"]],
+        "users_never_logged_in": [u["name"] for u in users if u["never_logged_in"]],
     }
 
 
@@ -253,6 +261,7 @@ def main():
     load_dotenv()
     try:
         target = target_from_env()
+        dormant_days = env_int("SPLUNK_DORMANT_DAYS", 90)
     except ValueError as exc:
         report_failure(str(exc), "bad_config")
         return 1
@@ -262,7 +271,7 @@ def main():
     version = client.server_version()
     context = client.get(CURRENT_CONTEXT)
     collected_as = context["entry"][0]["content"].get("username") if context else None
-    result = collect(client, collected_as) if client.require_capabilities(REQUIRED_CAPABILITIES) else None
+    result = collect(client, collected_as, now, dormant_days) if client.require_capabilities(REQUIRED_CAPABILITIES) else None
 
     evidence = {
         "metadata": {
@@ -272,6 +281,7 @@ def main():
             "tls_verified": client.tls_verified,
             "splunk_version": version,
             "collected_as": collected_as,
+            "dormant_days": dormant_days,
             "index_wildcard_rule": WILDCARD_RULE,
             **client.failure_metadata(),
         },
