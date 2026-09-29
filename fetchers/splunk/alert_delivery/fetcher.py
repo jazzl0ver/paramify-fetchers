@@ -1,40 +1,32 @@
 #!/usr/bin/env python3
-"""Splunk alert delivery: email and alert-action settings, and per alert whether each triggered action was delivered."""
+"""Whether Splunk alerts reach anyone: email and alert-action settings, and each triggered action's delivery outcome.
 
-import logging
-import os
+Advanced: delivery outcomes are parsed from the text of Splunk's own log lines (sendemail, sendmodalert), whose
+wording is only proven on Splunk Enterprise 10.4. Re-check the searches against a live instance before copying them.
+"""
+
 import re
 import sys
 from pathlib import Path
 from urllib.parse import quote
 
-from dotenv import load_dotenv
-
-SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIR.parent / "_shared"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "_shared"))
 from splunk_client import (  # noqa: E402
     NON_NOTIFYING_ACTIONS,
-    client_for,
-    env_int,
-    finish,
+    as_bool,
     iso,
-    now_epoch,
-    report_failure,
+    run,
     split_list,
-    target_from_env,
     to_epoch,
-    truthy,
-    write_evidence,
 )
 
-FETCHER = "splunk_alert_delivery"
-logger = logging.getLogger(FETCHER)
+NAME = "splunk_alert_delivery"
+CAPABILITIES = ["search", "rest_properties_get"]
+CONFIG = {"lookback_days": ("SPLUNK_DELIVERY_LOOKBACK_DAYS", 30)}
 
 ALERT_ACTIONS_CONF = "servicesNS/-/-/configs/conf-alert_actions"
 # configs/conf-alert_actions omits these keys for a role without admin_all_objects; properties/ serves one key as text.
 AUTH_KEYS = ("auth_username", "oauth_client_id")
-REQUIRED_CAPABILITIES = ["search", "rest_properties_get"]
-REQUIRED_INDEXES = ["_internal"]
 SUCCESS_RULE = ('sendemail: an INFO "Sending email." line (logged after the mail server accepted the message); '
                 'sendmodalert: "Alert action script completed ... with exit code=0"')
 
@@ -81,8 +73,8 @@ def action_row(entry):
     c = entry["content"]
     return {
         "name": entry["name"],
-        "app": entry.get("acl", {}).get("app"),
-        "enabled": not c.get("disabled"),
+        "app": (entry.get("acl") or {}).get("app"),
+        "enabled": not as_bool(c.get("disabled")),
         "notifying": entry["name"] not in NON_NOTIFYING_ACTIONS,
         "delivery_log": delivery_log(c),
         "label": c.get("label") or None,
@@ -96,11 +88,11 @@ def key_set(client, app, key):
 
 def email_row(client, entry):
     c = entry["content"]
-    app = entry.get("acl", {}).get("app") or "system"
-    use_tls, use_ssl = truthy(c.get("use_tls")), truthy(c.get("use_ssl"))
+    app = (entry.get("acl") or {}).get("app") or "system"
+    use_tls, use_ssl = bool(as_bool(c.get("use_tls"))), bool(as_bool(c.get("use_ssl")))
     return {
         "app": app,
-        "enabled": not c.get("disabled"),
+        "enabled": not as_bool(c.get("disabled")),
         "mailserver": c.get("mailserver") or None,
         "transport_encrypted": use_tls or use_ssl,
         "use_tls": use_tls,
@@ -126,7 +118,7 @@ def email_transport(client, ns_user, app, name):
             value = client.get_text(f"{ns}/alert_actions/email/{key}")
         if value is None:
             return None
-        values.append(truthy(value))
+        values.append(bool(as_bool(value)))
     return any(values)
 
 
@@ -250,50 +242,26 @@ def summarize(email_settings, actions, result):
     }
 
 
-def main():
-    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"),
-                        format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    load_dotenv()
-    try:
-        target = target_from_env()
-        lookback_days = env_int("SPLUNK_DELIVERY_LOOKBACK_DAYS", 30)
-    except ValueError as exc:
-        report_failure(str(exc), "bad_config")
-        return 1
-
-    client = client_for(target)
-    now = now_epoch()
-    version = client.server_version()
-    email_settings = actions = result = earliest = None
-    if client.require_capabilities(REQUIRED_CAPABILITIES):
-        entries = client.list(ALERT_ACTIONS_CONF)
-        if entries is not None:
-            actions = [action_row(e) for e in sorted(entries, key=lambda e: e["name"])]
-            email_settings = [email_row(client, e) for e in entries if e["name"] == "email"]
-        logs = None if actions is None else {a["name"]: a["delivery_log"] for a in actions}
-        if client.require_searchable_indexes(REQUIRED_INDEXES):
-            earliest = internal_earliest(client)
-            result = collect_deliveries(client, lookback_days, logs)
-
-    evidence = {
-        "metadata": {
-            "collected_at": iso(now),
-            "target": target["name"],
-            "base_url": target["base_url"],
-            "tls_verified": client.tls_verified,
-            "splunk_version": version,
-            "lookback_days": lookback_days,
-            "internal_earliest_event": earliest,
-            "delivery_success_rule": SUCCESS_RULE,
-            **client.failure_metadata(),
-        },
+def collect(client, config):
+    days = config["lookback_days"]
+    if not client.require_searchable_indexes(["_internal"]):  # so no attempts means none were logged, not hidden
+        return None
+    entries = client.list(ALERT_ACTIONS_CONF)
+    if entries is None:
+        return None
+    actions = [action_row(e) for e in sorted(entries, key=lambda e: e["name"])]
+    email_settings = [email_row(client, e) for e in entries if e["name"] == "email"]
+    result = collect_deliveries(client, days, {a["name"]: a["delivery_log"] for a in actions})
+    if result is None:
+        return None
+    return {
+        "metadata": {"internal_earliest_event": internal_earliest(client), "delivery_success_rule": SUCCESS_RULE},
         "summary": summarize(email_settings, actions, result),
-        "email_settings": email_settings or [],
-        "alert_actions": actions or [],
-        "deliveries": (result or {}).get("rows", []),
+        "email_settings": email_settings,
+        "alert_actions": actions,
+        "deliveries": result["rows"],
     }
-    return finish(logger, write_evidence(FETCHER, target["name"], evidence), client)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run(NAME, collect, CAPABILITIES, CONFIG))

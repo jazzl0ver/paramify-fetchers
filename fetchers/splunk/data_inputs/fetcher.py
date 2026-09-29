@@ -1,35 +1,30 @@
 #!/usr/bin/env python3
-"""Every data input configured on a Splunk instance, and every host, index and sourcetype the deployment actually receives."""
+"""What a Splunk instance is configured to collect, and every host, index and sourcetype the deployment receives.
 
-import logging
-import os
+Advanced: matching data/inputs entries to inputs.conf stanzas depends on details of Splunk's REST encoding
+that are only proven on Splunk Enterprise 10.4. Simplify it against a live instance before copying it.
+"""
+
 import sys
 from collections import Counter
 from pathlib import Path
 from urllib.parse import quote, unquote
 
-from dotenv import load_dotenv
-
-SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIR.parent / "_shared"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "_shared"))
 from splunk_client import (  # noqa: E402
-    client_for,
-    env_int,
-    finish,
+    as_bool,
+    as_int,
     iso,
-    minutes_since,
     now_epoch,
-    report_failure,
-    target_from_env,
+    run,
+    silence,
     to_epoch,
-    truthy,
-    write_evidence,
 )
 
-FETCHER = "splunk_data_inputs"
-logger = logging.getLogger(FETCHER)
+NAME = "splunk_data_inputs"
+CAPABILITIES = ["search", "list_inputs", "rest_properties_get"]
+CONFIG = {"max_silence_minutes": ("SPLUNK_MAX_SILENCE_MINUTES", 60)}
 
-REQUIRED_CAPABILITIES = ["search", "list_inputs", "rest_properties_get"]
 INPUTS = "servicesNS/-/-/data/inputs/all"
 INPUT_STANZAS = "services/properties/inputs"
 INPUTS_CONF = "servicesNS/-/-/configs/conf-inputs"
@@ -68,7 +63,7 @@ def stanza_of(entry, stanzas):
 
 
 def resolve_index(index, kind, content, default_index):
-    if kind == "fschange" and truthy(content.get("signedaudit")):
+    if kind == "fschange" and as_bool(content.get("signedaudit")):
         return "_audit"
     # Forwarded data keeps the index its forwarder set; a receiver's index setting does not place it.
     if kind in ("splunktcp", "splunktcp-ssl"):
@@ -83,7 +78,7 @@ def input_row(stanza, content, app, listed, collection, default_index, server_ho
     return {
         "stanza": stanza,
         "type": kind,
-        "enabled": not truthy(content.get("disabled")),
+        "enabled": not as_bool(content.get("disabled")),
         "index": index,
         "index_resolved": resolve_index(index, kind, content, default_index),
         "sourcetype": content.get("sourcetype") or None,
@@ -138,108 +133,66 @@ def collect_inputs(client, default_index, server_host):
 
 
 def collect_received(client, window):
-    searchable = client.searchable_indexes()
-    index_entries = client.list_indexes(searchable)
-    if index_entries is not None and searchable is not None:
-        client.require_searchable_indexes([e["name"] for e in index_entries if not e["content"].get("disabled")],
-                                          searchable)
+    # A stream sent only to an index the token cannot search would be missing, so every index must be searchable.
+    indexes = client.list_indexes(require_searchable=True)
     bound = str(int(now_epoch()))
     rows = client.search(RECEIVED_SPL, latest=bound)
     check = client.search(RECEIVED_CHECK_SPL, latest=bound)
+    if None in (indexes, rows, check):
+        return None
+    client.expect("host/index/sourcetype streams", len(rows), sum(as_int(r.get("sourcetypes")) or 0 for r in check))
     now = now_epoch()
-    if rows is None:
-        return None, now
-    if check is not None:
-        expected = sum(int(r.get("sourcetypes") or 0) for r in check)
-        if expected != len(rows):
-            client.fail("search " + RECEIVED_SPL, "IncompleteCollection",
-                        f"collected {len(rows)} host/index/sourcetype rows, tstats dc(sourcetype) by host index "
-                        f"sums to {expected}", "partial_failure")
     out = []
     for r in sorted(rows, key=lambda r: (r["host"].lower(), r["index"], r["sourcetype"].lower())):
         last_indexed = to_epoch(r.get("last_indexed"))
-        since = minutes_since(last_indexed, now)
+        since, silent = silence(last_indexed, now, window)
         out.append({
             "host": r["host"],
             "index": r["index"],
             "internal": r["index"].startswith("_"),
             "sourcetype": r["sourcetype"],
-            "event_count": int(r.get("count") or 0),
-            "source_count": int(r.get("sources") or 0),
+            "event_count": as_int(r.get("count")) or 0,
+            "source_count": as_int(r.get("sources")) or 0,
             "first_event": iso(to_epoch(r.get("first_event"))),
             "last_event": iso(to_epoch(r.get("last_event"))),
             "last_indexed": iso(last_indexed),
             "minutes_since_last_indexed": since,
             "max_silence_minutes": window,
-            "silent": since is None or abs(since) > window,
+            "silent": silent,
         })
-    return out, now
+    return out
 
 
 def summarize(inputs, rest_entries, settings, received):
-    s = {}
-    if inputs is not None:
-        s.update({
-            "inputs_total": len(inputs),
-            "inputs_enabled": sum(r["enabled"] for r in inputs),
-            "inputs_not_listed_by_rest": [r["stanza"] for r in inputs if not r["listed_by_rest"]],
-            "rest_entries": rest_entries,
-            "rest_settings_entries": settings,
-        })
-    if received is not None:
-        s.update({
-            "received_streams": len(received),
-            "received_streams_silent": sum(r["silent"] for r in received),
-            "received_hosts": sorted({r["host"] for r in received}, key=str.lower),
-            "received_sourcetypes": len({r["sourcetype"] for r in received}),
-        })
-    if inputs is not None:
-        s["inputs_by_type"] = dict(sorted(Counter(r["type"] for r in inputs).items()))
-    return s
-
-
-def main():
-    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"),
-                        format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    load_dotenv()
-    try:
-        target = target_from_env()
-        window = env_int("SPLUNK_MAX_SILENCE_MINUTES", 60)
-    except ValueError as exc:
-        report_failure(str(exc), "bad_config")
-        return 1
-
-    client = client_for(target)
-    info = client.get("services/server/info")
-    server = info["entry"][0]["content"] if info else {}
-    inputs = received = settings = rest_entries = judged_at = default_index = None
-    if client.require_capabilities(REQUIRED_CAPABILITIES):
-        default_index = client.get_text(DEFAULT_INDEX)
-        default_index = default_index.strip() if default_index else None
-        result = collect_inputs(client, default_index, server.get("host"))
-        if result is not None:
-            inputs, rest_entries, settings = result
-        received, judged_at = collect_received(client, window)
-
-    evidence = {
-        "metadata": {
-            "collected_at": iso(judged_at or now_epoch()),
-            "target": target["name"],
-            "base_url": target["base_url"],
-            "tls_verified": client.tls_verified,
-            "splunk_version": server.get("version"),
-            "server_host": server.get("host"),
-            "server_roles": server.get("server_roles", []),
-            "default_index": default_index,
-            "max_silence_minutes": window,
-            **client.failure_metadata(),
-        },
-        "summary": summarize(inputs, rest_entries, settings, received),
-        "inputs": inputs or [],
-        "received": received or [],
+    return {
+        "inputs_total": len(inputs),
+        "inputs_enabled": sum(r["enabled"] for r in inputs),
+        "inputs_by_type": dict(sorted(Counter(r["type"] for r in inputs).items())),
+        "inputs_not_listed_by_rest": [r["stanza"] for r in inputs if not r["listed_by_rest"]],
+        "rest_entries": rest_entries,
+        "rest_settings_entries": settings,
+        "received_streams": len(received),
+        "received_streams_silent": sum(r["silent"] for r in received),
+        "received_hosts": sorted({r["host"] for r in received}, key=str.lower),
+        "received_sourcetypes": len({r["sourcetype"] for r in received}),
     }
-    return finish(logger, write_evidence(FETCHER, target["name"], evidence), client)
+
+
+def collect(client, config):
+    default_index = (client.get_text(DEFAULT_INDEX) or "").strip() or None
+    configured = collect_inputs(client, default_index, client.info.get("host"))
+    received = collect_received(client, config["max_silence_minutes"])
+    if configured is None or received is None:
+        return None
+    inputs, rest_entries, settings = configured
+    return {
+        "metadata": {"server_host": client.info.get("host"), "server_roles": client.info.get("server_roles", []),
+                     "default_index": default_index},
+        "summary": summarize(inputs, rest_entries, settings, received),
+        "inputs": inputs,
+        "received": received,
+    }
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run(NAME, collect, CAPABILITIES, CONFIG))

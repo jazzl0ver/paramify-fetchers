@@ -1,10 +1,10 @@
 """Splunk fetchers, driven without a Splunk deployment.
 
-Pure-logic tests pin the rules that decide a verdict (index grants, alert
-classification, input stanzas, freshness). The run tests drive each fetcher's
-main() against FakeSplunk, a stand-in for requests.Session that serves one
-small, internally consistent deployment, and check the three ways Splunk
-returns partial data without an HTTP error: a paging.total that disagrees
+Shape tests hold every fetcher to the category's pattern (fetchers/splunk/README.md,
+"Adding a fetcher"). Pure-logic tests pin the rules that decide a verdict. The run
+tests drive each fetcher through the shared run() against FakeSplunk, a stand-in
+for requests.Session serving one small, consistent deployment, and check the ways
+Splunk returns partial data without an HTTP error: a paging.total that disagrees
 with the entries, a WARN on a search, and a token missing a capability.
 """
 
@@ -19,6 +19,7 @@ from urllib.parse import quote
 
 import pytest
 import requests
+import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SPLUNK = REPO_ROOT / "fetchers" / "splunk"
@@ -42,6 +43,28 @@ NOW = time.time()
 BASE = "https://splunk.test:8089"
 
 
+# --- the shape every fetcher follows -------------------------------------------
+
+CATEGORY = yaml.safe_load((REPO_ROOT / "fetchers" / "_categories" / "splunk.yaml").read_text())
+README = (SPLUNK / "README.md").read_text()
+
+
+@pytest.mark.parametrize("name", FETCHERS)
+def test_every_fetcher_follows_the_shape(name):
+    m, spec = MODS[name], yaml.safe_load((SPLUNK / name / "fetcher.yaml").read_text())
+    assert m.NAME == spec["name"] == f"splunk_{name}"
+    assert callable(m.collect) and m.CAPABILITIES and "search" in m.CAPABILITIES
+    declared = {f["env"] for f in {**CATEGORY["config_schema"], **spec.get("config_schema", {})}.values()}
+    assert {env for env, _ in getattr(m, "CONFIG", {}).values()} <= declared
+    assert len(spec["evidence_set"]["instructions"].split()) <= 80
+
+
+@pytest.mark.parametrize("name", FETCHERS)
+def test_the_readme_lists_every_capability_a_fetcher_checks(name):
+    row = next(line for line in README.splitlines() if line.startswith(f"| `splunk_{name}` |") and "`search`" in line)
+    assert all(f"`{cap}`" in row for cap in MODS[name].CAPABILITIES)
+
+
 # --- pure logic --------------------------------------------------------------
 
 def test_disallowed_index_patterns_win_over_allowed_ones():
@@ -52,11 +75,15 @@ def test_disallowed_index_patterns_win_over_allowed_ones():
 
 def test_a_roles_effective_indexes_subtract_its_denials():
     ria = MODS["role_index_access"]
-    graph = ria.RoleGraph([{"name": "auditor", "content": {
-        "srchIndexesAllowed": ["*", "_*"], "srchIndexesDisallowed": ["_audit"], "capabilities": ["search"]}}])
-    _, derived = ria.access(graph, ["auditor"], {"search"}, {"_audit", "_internal", "main"})
+    roles = {"auditor": {"srchIndexesAllowed": ["*", "_*"], "srchIndexesDisallowed": ["_audit"]}}
+    derived = ria.access(roles, ["auditor"], {"search"}, {"_audit", "_internal", "main"})
     assert derived["effective_indexes"] == ["_internal", "main"]
     assert derived["can_search_all_internal"] is False
+
+
+def test_inheritance_is_followed_through_every_level():
+    roles = {"a": {"imported_roles": ["b"]}, "b": {"imported_roles": "c"}, "c": {"imported_roles": ["a"]}}
+    assert MODS["role_index_access"].inherited(roles, "a") == {"b", "c"}
 
 
 def test_star_never_reaches_internal_indexes_and_underscore_patterns_do():
@@ -67,22 +94,15 @@ def test_star_never_reaches_internal_indexes_and_underscore_patterns_do():
     assert not ria.matches("*", "_audit")
 
 
-def test_least_restrictive_time_limit():
-    lr = MODS["role_index_access"].least_restrictive
-    assert lr(["3600", "86400"]) == 86400
-    assert lr(["3600", "0"]) is None  # 0 is unlimited and wins
-    assert lr(["-1", None, ""]) is None  # unset everywhere
-    assert lr(["-1", "600"]) == 600
-
-
 def test_alert_classification_follows_splunk_webs_filter():
     is_alert = MODS["alert_rules"].is_alert
-    assert is_alert({"is_scheduled": True, "alert_type": "number of events"}, [])
-    assert is_alert({"is_scheduled": True, "alert_type": "always", "alert.track": True}, ["email"])
-    assert not is_alert({"is_scheduled": True, "alert_type": "always", "alert.track": False}, ["email"])
+    assert is_alert({"is_scheduled": True, "alert_type": "number of events"})
+    assert is_alert({"is_scheduled": True, "alert_type": "always", "alert.track": True, "actions": "email"})
+    assert is_alert({"is_scheduled": "1", "alert_type": "always", "alert.track": "1"})  # stringified flags
+    assert not is_alert({"is_scheduled": True, "alert_type": "always", "alert.track": "0", "actions": "email"})
     assert is_alert({"is_scheduled": True, "alert_type": "always", "dispatch.earliest_time": "rt-5m",
-                     "dispatch.latest_time": "rt"}, ["webhook"])
-    assert not is_alert({"is_scheduled": False, "alert_type": "number of events"}, ["email"])
+                     "dispatch.latest_time": "rt", "actions": "webhook"})
+    assert not is_alert({"is_scheduled": False, "alert_type": "number of events", "actions": "email"})
 
 
 def test_telemetry_only_action_is_not_a_notification():
@@ -92,11 +112,9 @@ def test_telemetry_only_action_is_not_a_notification():
 
 
 def _alert_row(actions):
-    ar = MODS["alert_rules"]
-    entry = {"name": "a", "content": {"actions": ",".join(actions)}}
-    row = {"name": "a", "app": "search", "namespace_user": "nobody", "actions": actions,
-           "alert_track": "false", "alert_type": "number of events"}
-    return ar.alert_row(entry, row, 30, set(), {}, {}, {})
+    entry = {"name": "a", "id": f"{BASE}/servicesNS/nobody/search/saved/searches/a",
+             "content": {"actions": ",".join(actions), "alert_type": "number of events"}}
+    return MODS["alert_rules"].alert_row(entry, {}, {}, 30)
 
 
 def test_input_stanza_types():
@@ -130,7 +148,7 @@ def test_index_staleness_rules():
 
     def row(content, times, counts):
         return ia.index_row({"name": "main", "content": {"datatype": "event", **content}}, counts,
-                            {"main": times} if times else {}, {}, NOW, 60)
+                            {"main": times} if times else {}, NOW, 60)
 
     fresh = row({}, {"last_indexed": NOW - 120}, {"main": {"count": 5, "size_bytes": 1, "servers": {"s"}}})
     assert (fresh["holds_data"], fresh["stale"]) == (True, False)
@@ -142,8 +160,6 @@ def test_index_staleness_rules():
     assert (empty["holds_data"], empty["stale"]) == (False, True)
     disabled = row({"disabled": True}, None, {})
     assert (disabled["holds_data"], disabled["stale"]) == (None, True)
-    unknown = ia.index_row({"name": "main", "content": {"datatype": "event"}}, None, None, {}, NOW, 60)
-    assert (unknown["holds_data"], unknown["stale"]) == (None, None)
 
 
 def test_retention_and_freeze_rules():
@@ -164,11 +180,10 @@ def test_both_value_renderings_decode():
 
 
 def test_silence_is_judged_in_both_directions():
-    judge = MODS["log_source_freshness"].judge
-    assert judge(NOW - 120, NOW, 60)["silent"] is False
-    assert judge(NOW - 7200, NOW, 60)["silent"] is True
-    assert judge(NOW + 7200, NOW, 60)["silent"] is True
-    assert judge(None, NOW, 60)["silent"] is True
+    assert sc.silence(NOW - 120, NOW, 60) == (2, False)
+    assert sc.silence(NOW - 7200, NOW, 60)[1] is True
+    assert sc.silence(NOW + 7200, NOW, 60)[1] is True
+    assert sc.silence(None, NOW, 60) == (None, True)
 
 
 # --- client resilience ---------------------------------------------------------
@@ -290,7 +305,7 @@ def _searches(m):
     times = {"first_event": NOW - 86400, "last_event": NOW - 60, "last_indexed": NOW - 60}
     return {
         # The client's searchable_indexes() runs the same SPL.
-        m["log_source_freshness"].SEARCHABLE_INDEXES_SPL: [{"indexes": list(INDEXES)}],
+        sc.SEARCHABLE_INDEXES_SPL: [{"indexes": list(INDEXES)}],
         m["log_source_freshness"].HOSTS_SPL: [{"host": "web01", "count": "5", **times}, {"host": "sh1", "count": "9", **times}],
         m["log_source_freshness"].HOST_COUNT_SPL: [{"hosts": "2"}],
         m["log_source_freshness"].FORWARDERS_SPL: [{"hostname": "web01", "fwd_type": "uf", "version": "10.4.3",
@@ -367,6 +382,8 @@ class FakeSplunk:
         body = self.routes[path]
         if path == "services/data/indexes" and (params or {}).get("datatype") != "all":
             body = [e for e in body if e["content"]["datatype"] != "metric"]  # Splunk's default is datatype=event
+        if path == "services/data/indexes" and self.fault == "badshape":
+            body = [{"name": e["name"]} for e in body]  # entries with no content block
         if isinstance(body, list):
             entries = ALERTS if (params or {}).get("search") else body
             extra = 1 if self.fault == "short" else 0
@@ -374,10 +391,10 @@ class FakeSplunk:
         return _Resp(200, body)
 
 
-def _run(name, monkeypatch, tmp_path, fault=None):
+def _run(name, monkeypatch, tmp_path, fault=None, env=None):
     monkeypatch.setattr(sc.requests, "Session", lambda: FakeSplunk(fault))
     monkeypatch.setattr(sc.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(MODS[name], "load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr(sc, "load_dotenv", lambda *a, **k: None)
     for key in list(sc.os.environ):
         if key.startswith("SPLUNK_"):
             monkeypatch.delenv(key)
@@ -387,8 +404,12 @@ def _run(name, monkeypatch, tmp_path, fault=None):
     monkeypatch.setenv("SPLUNK_BASE_URL", BASE)
     monkeypatch.setenv("SPLUNK_TOKEN", "t0k3n")
     monkeypatch.setenv("SPLUNK_TARGET_NAME", "prod")
-    code = MODS[name].main()
-    evidence = json.loads((tmp_path / "evidence" / f"splunk_{name}_prod.json").read_text())
+    for key, value in (env or {}).items():
+        monkeypatch.setenv(key, value)
+    m = MODS[name]
+    code = sc.run(m.NAME, m.collect, m.CAPABILITIES, getattr(m, "CONFIG", None))
+    out = tmp_path / "evidence" / f"splunk_{name}_prod.json"
+    evidence = json.loads(out.read_text()) if out.exists() else None
     return code, evidence, json.loads(status.read_text()) if status.exists() else None
 
 
@@ -408,6 +429,17 @@ def test_partial_data_fails_the_collection(name, fault, monkeypatch, tmp_path):
     assert status["code"] in STATUS_CODES and status["error"]
     if fault == "nocaps":
         assert status["code"] == "not_authorized" and "MissingCapability" in json.dumps(evidence["metadata"])
+
+
+def test_an_unexpected_response_still_leaves_evidence_and_a_reason(monkeypatch, tmp_path):
+    code, evidence, status = _run("index_retention", monkeypatch, tmp_path, "badshape")
+    assert code == 1 and status["code"] == "internal_error"
+    assert evidence["metadata"]["partial_failure"] is True and evidence["summary"] == {}
+
+
+def test_a_config_value_that_is_not_a_number_is_bad_config(monkeypatch, tmp_path):
+    code, evidence, status = _run("alert_rules", monkeypatch, tmp_path, env={"SPLUNK_ALERT_LOOKBACK_DAYS": "soon"})
+    assert (code, evidence, status["code"]) == (1, None, "bad_config")
 
 
 def test_role_index_access_verdicts(monkeypatch, tmp_path):
