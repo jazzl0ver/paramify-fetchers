@@ -27,6 +27,14 @@ target_schema:
     default: true
     env: SPLUNK_VERIFY_SSL
     description: Verify the management port's TLS certificate. Set false only for a self-signed test instance.
+  ca_bundle:
+    type: string
+    required: false
+    env: SPLUNK_CA_BUNDLE
+    description: >-
+      Path to the CA bundle that signed the management port's certificate, for
+      a deployment on a private CA. When set, TLS is verified against it and
+      verify_ssl is ignored.
 
 config_schema:
   delivery_lookback_days:

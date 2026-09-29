@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -17,6 +18,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "_lib"))
 from fetcher_status import report_failure  # noqa: E402
 
 TIMEOUT_SECONDS = 120
+# Transient answers are retried with backoff; anything else fails on the first answer.
+RETRY_STATUS = {429, 500, 502, 503, 504}
+MAX_RETRIES = 4
+MAX_BACKOFF_SECONDS = 30
 _FAILING_MESSAGE_TYPES = {"WARN", "ERROR", "FATAL"}
 _HTTP_CODES = {401: "auth_failed", 403: "not_authorized", 429: "rate_limited"}
 # Stock alert actions that only record results; any other action (email, webhook, script, app-supplied) notifies.
@@ -76,13 +81,32 @@ def sanitize_for_filename(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]", "_", (value or "").strip()) or "unknown"
 
 
+def _backoff(resp: Optional[requests.Response], attempt: int) -> float:
+    """Retry-After when the server sends one, else exponential; capped either way."""
+    retry_after = resp.headers.get("Retry-After") if resp is not None else None
+    try:
+        if retry_after:
+            return min(float(retry_after), MAX_BACKOFF_SECONDS)
+    except ValueError:
+        pass
+    return min(2 ** attempt, MAX_BACKOFF_SECONDS)
+
+
+def _retryable(exc: requests.exceptions.RequestException) -> bool:
+    """A connection that failed to open. Not a TLS failure, and not a read timeout on a search already running."""
+    return (isinstance(exc, requests.exceptions.ConnectionError)
+            and not isinstance(exc, requests.exceptions.SSLError))
+
+
 class SplunkClient:
-    def __init__(self, base_url: str, token: str, verify_ssl: bool = True):
+    def __init__(self, base_url: str, token: str, verify_ssl: bool = True, ca_bundle: Optional[str] = None):
         self.base_url = base_url.rstrip("/")
         self.session = requests.Session()
         self.session.headers["Authorization"] = f"Bearer {token}"
-        self.session.verify = verify_ssl
-        if not verify_ssl:
+        # A CA bundle verifies against that CA and overrides verify_ssl.
+        self.session.verify = ca_bundle or verify_ssl
+        self.tls_verified = bool(ca_bundle) or verify_ssl
+        if not self.tls_verified:
             requests.packages.urllib3.disable_warnings()
         self.failures: List[Dict[str, str]] = []
         self.codes: List[str] = []
@@ -93,11 +117,19 @@ class SplunkClient:
 
     def _send(self, method: str, path: str, operation: str, **kwargs) -> Optional[requests.Response]:
         url = f"{self.base_url}/{path.lstrip('/')}"
-        try:
-            resp = self.session.request(method, url, timeout=TIMEOUT_SECONDS, **kwargs)
-        except requests.exceptions.RequestException as exc:
-            self.fail(operation, type(exc).__name__, str(exc), "target_unreachable")
-            return None
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                resp = self.session.request(method, url, timeout=TIMEOUT_SECONDS, **kwargs)
+            except requests.exceptions.RequestException as exc:
+                if attempt < MAX_RETRIES and _retryable(exc):
+                    time.sleep(_backoff(None, attempt))
+                    continue
+                self.fail(operation, type(exc).__name__, str(exc), "target_unreachable")
+                return None
+            if resp.status_code in RETRY_STATUS and attempt < MAX_RETRIES:
+                time.sleep(_backoff(resp, attempt))
+                continue
+            break
         if resp.status_code >= 400:
             self.fail(operation, f"HTTP {resp.status_code}", _message_text(resp), _HTTP_CODES.get(resp.status_code, "internal_error"))
             return None
@@ -238,7 +270,12 @@ def target_from_env() -> Dict[str, Any]:
         "base_url": base_url,
         "token": os.environ["SPLUNK_TOKEN"],
         "verify_ssl": env_bool("SPLUNK_VERIFY_SSL", True),
+        "ca_bundle": os.environ.get("SPLUNK_CA_BUNDLE", "").strip() or None,
     }
+
+
+def client_for(target: Dict[str, Any]) -> SplunkClient:
+    return SplunkClient(target["base_url"], target["token"], target["verify_ssl"], target.get("ca_bundle"))
 
 
 def write_evidence(fetcher_name: str, target_name: str, evidence: dict) -> Path:

@@ -14,7 +14,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR.parent / "_shared"))
 from splunk_client import (  # noqa: E402
     NON_NOTIFYING_ACTIONS,
-    SplunkClient,
+    client_for,
     env_int,
     finish,
     iso,
@@ -261,7 +261,7 @@ def main():
         report_failure(str(exc), "bad_config")
         return 1
 
-    client = SplunkClient(target["base_url"], target["token"], target["verify_ssl"])
+    client = client_for(target)
     now = now_epoch()
     version = client.server_version()
     email_settings = actions = result = earliest = None
@@ -280,6 +280,7 @@ def main():
             "collected_at": iso(now),
             "target": target["name"],
             "base_url": target["base_url"],
+            "tls_verified": client.tls_verified,
             "splunk_version": version,
             "lookback_days": lookback_days,
             "internal_earliest_event": earliest,

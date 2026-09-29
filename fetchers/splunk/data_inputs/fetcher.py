@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR.parent / "_shared"))
 from splunk_client import (  # noqa: E402
-    SplunkClient,
+    client_for,
     env_int,
     finish,
     iso,
@@ -209,7 +209,7 @@ def main():
         report_failure(str(exc), "bad_config")
         return 1
 
-    client = SplunkClient(target["base_url"], target["token"], target["verify_ssl"])
+    client = client_for(target)
     info = client.get("services/server/info")
     server = info["entry"][0]["content"] if info else {}
     inputs = received = settings = rest_entries = judged_at = default_index = None
@@ -226,6 +226,7 @@ def main():
             "collected_at": iso(judged_at or now_epoch()),
             "target": target["name"],
             "base_url": target["base_url"],
+            "tls_verified": client.tls_verified,
             "splunk_version": server.get("version"),
             "server_host": server.get("host"),
             "server_roles": server.get("server_roles", []),
