@@ -77,6 +77,32 @@ def truthy(value: Any) -> bool:
     return str(value).strip().lower() in ("1", "true", "t", "yes", "y")
 
 
+def as_bool(value: Any) -> Optional[bool]:
+    """A Splunk boolean as a native JSON bool, a number or a string ("0", "true" ...); None when unrecognised."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    folded = str(value).strip().lower() if isinstance(value, str) else None
+    if folded in ("1", "true", "t", "yes", "y", "on"):
+        return True
+    if folded in ("0", "false", "f", "no", "n", "off"):
+        return False
+    return None
+
+
+def as_int(value: Any) -> Optional[int]:
+    """A Splunk number sent as an int or a string (data/indexes sends currentDBSizeMB as "0"); None when not one."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    try:
+        return int(float(str(value).strip()))
+    except ValueError:
+        return None
+
+
 def sanitize_for_filename(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]", "_", (value or "").strip()) or "unknown"
 
