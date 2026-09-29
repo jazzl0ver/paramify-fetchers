@@ -49,10 +49,21 @@ fails, naming what is missing.
 | `splunk_alert_delivery` | `search`, `rest_properties_get` | `_internal` |
 | `splunk_role_index_access` | `search`, `list_all_roles`, `list_all_users`, `rest_properties_get` | `*` and `_*`, nothing disallowed |
 
-**Stock `admin` is not enough.** On Splunk Enterprise 10.4.2, `admin` holds
-`admin_all_objects`, `rest_properties_get`, `list_inputs` and `search`, but
-not `list_all_users` or `list_all_roles`. Give the collection user a custom
-role, for example in `authorize.conf`:
+What each kind of token saw on a Splunk Enterprise 10.4.3 instance with 4
+users, 26 roles, 176 saved searches and 20 indexes. In every case Splunk
+reported the filtered count as `paging.total`:
+
+| Token | Users | Roles | Saved searches | Indexes |
+|---|---|---|---|---|
+| A role with no capabilities | 1 (itself) | 1 | 127 | 20 |
+| Stock `admin` | 4 | 12 | 176 | 20 |
+| The role below | 4 | 26 | 176 | 20 |
+
+**Stock `admin` is not enough.** It holds `admin_all_objects`,
+`rest_properties_get`, `list_inputs` and `search`, but not `list_all_roles`,
+so it cannot see Splunk's 14 internal `_spl_*` roles. `splunk_role_index_access`
+refuses it; the other six fetchers run with it. Give the collection user a
+custom role, for example in `authorize.conf`:
 
 ```ini
 [role_paramify_evidence]
@@ -70,9 +81,9 @@ read, which includes every Monitoring Console alert on a stock install. It is
 a broad grant, so limit the token with an expiry. The fetchers only send read
 requests and searches.
 
-Not yet verified against a live instance: exactly which of these a token needs
-to see every user. A stock `admin` token, which lacks `list_all_users`, listed
-both users on a 10.4.2 instance. The fetcher requires the capability anyway.
+Stock `admin` lists every user without `list_all_users`, so that requirement is
+stricter than Splunk needs for an admin-derived role. It stays, because a
+token without it and without admin rights sees only its own user.
 
 ### Targets and settings
 
@@ -198,8 +209,11 @@ against a live instance first.
 
 ## Known limitations
 
-- Proven on Splunk Enterprise 10.4.x standalone only. Splunk Cloud and
+- Proven on Splunk Enterprise 10.4.3 standalone only. Splunk Cloud and
   distributed deployments are untested.
+- An alert that is running while `splunk_alert_delivery` collects can show up
+  in `summary.attempts_unmatched`, because Splunk logs the delivery before it
+  logs the scheduled run it belongs to. The next collection matches it.
 - `splunk_index_activity` fails on a distributed deployment unless the search
   head defines the indexers' indexes.
 - `splunk_data_inputs` sees only the queried instance's `inputs.conf`. Inputs
